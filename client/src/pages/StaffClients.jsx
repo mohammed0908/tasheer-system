@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
-import { DragDropContext, Draggable, Droppable } from '@hello-pangea/dnd';
-import toast from 'react-hot-toast';
 import {
   CheckCircle2,
   Clock3,
@@ -33,20 +31,6 @@ const statusStyles = {
   'Visa Completed': 'bg-emerald-50 text-emerald-700 border-emerald-100',
   Completed: 'bg-emerald-50 text-emerald-700 border-emerald-100'
 };
-
-const kanbanStatuses = [
-  { id: 'PENDING_DOCS', label: 'Pending Documents' },
-  { id: 'DOCS_VERIFICATION', label: 'Under Review' },
-  { id: 'PENDING_OFFER_APPLY', label: 'Pending Operations' },
-  { id: 'OFFER_PROCESSING', label: 'Waiting for OL' },
-  { id: 'OFFER_UPLOADED', label: 'Admission Issued' },
-  { id: 'OFFER_APPROVED', label: 'Admission Issued' },
-  { id: 'PENDING_PAYMENT', label: 'Pending Payment' },
-  { id: 'WAITING_PAYMENT_VERIFICATION', label: 'Waiting Verification' },
-  { id: 'PAYMENT_VERIFIED', label: 'Paid' },
-  { id: 'VISA_PROCESSING', label: 'Visa Processing' },
-  { id: 'VISA_COMPLETED', label: 'Visa Completed' }
-];
 
 const getApplicationStatus = (client) => {
   if (client?.app_status === 'PENDING_DOCS') return 'Pending Documents';
@@ -177,38 +161,6 @@ const StaffClients = () => {
 
   const statusCount = (status) => rows.filter(row => row.status === status).length;
 
-  const kanbanRows = useMemo(() => kanbanStatuses.map(status => ({
-    ...status,
-    items: rows.filter(row => row.rawStatus === status.id)
-  })), [rows]);
-
-  const handleKanbanDragEnd = async (result) => {
-    const { destination, source, draggableId } = result;
-    if (!destination || destination.droppableId === source.droppableId) return;
-
-    const applicationId = Number(draggableId.replace('app-', ''));
-    const nextStatus = destination.droppableId;
-    const previousClients = clients;
-
-    setClients(prev => prev.map(client => (
-      Number(client.application_id) === applicationId
-        ? { ...client, app_status: nextStatus }
-        : client
-    )));
-
-    try {
-      const token = localStorage.getItem('token');
-      await axios.put(`/api/applications/${applicationId}/advance-state`, { new_status: nextStatus }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      toast.success('Application status updated.');
-      await fetchClients({ showLoading: false });
-    } catch (err) {
-      setClients(previousClients);
-      toast.error(err.response?.data?.message || 'Could not update application status.');
-    }
-  };
-
   const pipelineCards = [
     { label: 'Total Applications', value: String(rows.length), icon: Users, accent: 'bg-blue-50 text-blue-600 border-blue-100' },
     { label: 'Under Review', value: String(statusCount('Under Review')), icon: FileSearch, accent: 'bg-indigo-50 text-indigo-600 border-indigo-100' },
@@ -329,52 +281,6 @@ const StaffClients = () => {
             </button>
           </div>
         </div>
-      </section>
-
-      <section className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h3 className="text-lg font-black text-slate-950">Operations Kanban</h3>
-            <p className="mt-1 text-sm font-medium text-slate-500">Drag cards between stages to update the application status.</p>
-          </div>
-        </div>
-        <DragDropContext onDragEnd={handleKanbanDragEnd}>
-          <div className="flex gap-3 overflow-x-auto pb-2">
-            {kanbanRows.map(column => (
-              <Droppable droppableId={column.id} key={column.id}>
-                {(provided, snapshot) => (
-                  <div
-                    ref={provided.innerRef}
-                    {...provided.droppableProps}
-                    className={`min-h-52 w-64 shrink-0 rounded-2xl border p-3 transition ${snapshot.isDraggingOver ? 'border-blue-200 bg-blue-50' : 'border-slate-100 bg-slate-50'}`}
-                  >
-                    <div className="mb-3 flex items-center justify-between">
-                      <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-500">{column.label}</p>
-                      <span className="rounded-full bg-white px-2 py-0.5 text-xs font-black text-slate-500">{column.items.length}</span>
-                    </div>
-                    {column.items.map((item, index) => (
-                      <Draggable draggableId={`app-${item.clientData.application_id}`} index={index} key={`app-${item.clientData.application_id}`}>
-                        {(dragProvided, dragSnapshot) => (
-                          <div
-                            ref={dragProvided.innerRef}
-                            {...dragProvided.draggableProps}
-                            {...dragProvided.dragHandleProps}
-                            className={`mb-2 rounded-xl border bg-white p-3 shadow-sm transition ${dragSnapshot.isDragging ? 'rotate-1 border-blue-200 shadow-lg' : 'border-slate-100'}`}
-                          >
-                            <p className="text-sm font-black text-slate-900">{item.name}</p>
-                            <p className="mt-1 text-xs font-bold text-blue-700">{item.appUid}</p>
-                            <p className="mt-1 truncate text-xs font-semibold text-slate-500">{item.university}</p>
-                          </div>
-                        )}
-                      </Draggable>
-                    ))}
-                    {provided.placeholder}
-                  </div>
-                )}
-              </Droppable>
-            ))}
-          </div>
-        </DragDropContext>
       </section>
 
       {error && (

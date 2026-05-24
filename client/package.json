@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@hello-pangea/dnd": "^18.0.1",
     "axios": "^1.15.1",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
