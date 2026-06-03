@@ -102,9 +102,16 @@ const ClientLayout = () => {
   };
 
   const handleNotificationClick = async (notification) => {
+    const target = getNotificationTarget(notification);
     await markNotificationRead(notification.id);
     setIsNotificationsOpen(false);
-    navigate(getNotificationTarget(notification));
+    navigate(target);
+    if (target.includes('#')) {
+      const hash = target.split('#')[1];
+      window.setTimeout(() => {
+        document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 150);
+    }
   };
 
   return (

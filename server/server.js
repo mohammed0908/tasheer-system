@@ -45,6 +45,7 @@ import messageRoutes from './routes/messageRoutes.js';
 import goalRoutes from './routes/goalRoutes.js';
 import financeRoutes from './routes/financeRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
+import meetingRoutes from './routes/meetingRoutes.js';
 
 app.use('/api/applications', applicationRoutes);
 app.use('/api/dashboard', dashboardRoutes);
@@ -60,6 +61,7 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/goals', goalRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/meetings', meetingRoutes);
 // ==========================================
 
 app.use((err, req, res, next) => {

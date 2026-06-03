@@ -100,12 +100,19 @@ const StaffLayout = () => {
   const handleNotificationClick = async (notification) => {
     try {
       const token = localStorage.getItem('token');
+      const target = getNotificationTarget(notification);
       await axios.put(`/api/notifications/${notification.id}/read`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setNotifications(prev => prev.filter(item => item.id !== notification.id));
       setIsNotificationsOpen(false);
-      navigate(getNotificationTarget(notification));
+      navigate(target);
+      if (target.includes('#')) {
+        const hash = target.split('#')[1];
+        window.setTimeout(() => {
+          document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
+      }
     } catch (error) {
       console.error('Failed to mark notification as read:', error);
     }

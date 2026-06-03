@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Activity, ArrowRight, CalendarDays, CheckCircle2, Clock3, CreditCard, FileCheck2, FileText, FileUp, Flag, MessageCircle, PieChart as PieChartIcon, RefreshCw, Send, Target, TrendingUp, UserPlus, WalletCards } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { Activity, ArrowRight, CalendarDays, CheckCircle2, Clock3, CreditCard, FileCheck2, FileText, FileUp, Flag, MessageCircle, PieChart as PieChartIcon, RefreshCw, Send, Target, TrendingUp, UserPlus, Video, WalletCards, X } from 'lucide-react';
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 
 const formatCurrentDate = () => {
@@ -11,6 +12,20 @@ const formatCurrentDate = () => {
     day: 'numeric',
     year: 'numeric'
   }).format(new Date());
+};
+
+const formatMeetingDateTime = (value) => {
+  if (!value) return 'Not scheduled';
+  return new Intl.DateTimeFormat('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  }).format(new Date(value));
+};
+
+const getDatetimeLocalMin = () => {
+  const date = new Date();
+  date.setSeconds(0, 0);
+  return date.toISOString().slice(0, 16);
 };
 
 const actionTypeStyles = {
@@ -102,6 +117,43 @@ const getApiErrorMessage = (err, fallback = 'Failed to create application.') => 
   fallback
 );
 
+const getMeetingCountdownText = (requestedTime) => {
+  const diff = new Date(requestedTime).getTime() - Date.now();
+  if (!Number.isFinite(diff) || diff <= 0) return 'Meeting is Starting Now';
+
+  const totalSeconds = Math.floor(diff / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (value) => String(value).padStart(2, '0');
+
+  return `Starts in: ${pad(days)}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
+};
+
+const MeetingCountdown = ({ requestedTime }) => {
+  const [timeLeft, setTimeLeft] = useState('');
+
+  useEffect(() => {
+    const updateCountdown = () => setTimeLeft(getMeetingCountdownText(requestedTime));
+    const startTimer = window.setTimeout(updateCountdown, 0);
+    const interval = window.setInterval(updateCountdown, 1000);
+
+    return () => {
+      window.clearTimeout(startTimer);
+      window.clearInterval(interval);
+    };
+  }, [requestedTime]);
+
+  const isStarting = timeLeft === 'Meeting is Starting Now';
+
+  return (
+    <span className={`inline-flex rounded-xl px-3 py-2 text-xs font-black ${isStarting ? 'bg-emerald-600 text-white' : 'bg-orange-50 text-orange-700'}`}>
+      {timeLeft || 'Starts in: --d --h --m --s'}
+    </span>
+  );
+};
+
 const ProgressRing = ({ value, color, trail }) => {
   const radius = 44;
   const circumference = 2 * Math.PI * radius;
@@ -178,11 +230,17 @@ const GoalProgressRing = ({ value, color, subtitle }) => {
 const StaffDashboard = () => {
   const navigate = useNavigate();
   const [activeTasks, setActiveTasks] = useState([]);
+  const [meetings, setMeetings] = useState([]);
+  const [approvalMeeting, setApprovalMeeting] = useState(null);
+  const [proposalMeeting, setProposalMeeting] = useState(null);
+  const [meetingLink, setMeetingLink] = useState('');
+  const [proposedTime, setProposedTime] = useState('');
   const [goals, setGoals] = useState([]);
   const [applications, setApplications] = useState([]);
   const [staffMembers, setStaffMembers] = useState([]);
   const [staffMetrics, setStaffMetrics] = useState({ performance_score: 0, completed_tasks: 0, total_tasks: 0 });
   const [isTasksLoading, setIsTasksLoading] = useState(true);
+  const [isMeetingsLoading, setIsMeetingsLoading] = useState(true);
   const [isLifecycleLoading, setIsLifecycleLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState('');
   const [actionError, setActionError] = useState('');
@@ -255,6 +313,19 @@ const StaffDashboard = () => {
       setIsTasksLoading(false);
     }
   }, []);
+
+  const fetchMeetings = useCallback(async ({ showLoading = true } = {}) => {
+    try {
+      if (showLoading) setIsMeetingsLoading(true);
+      const res = await axios.get('/api/meetings', { headers: authHeaders() });
+      setMeetings(Array.isArray(res.data) ? res.data : []);
+    } catch (error) {
+      console.error('Failed to fetch meetings:', error);
+      setMeetings([]);
+    } finally {
+      setIsMeetingsLoading(false);
+    }
+  }, [authHeaders]);
 
   const fetchStaffMetrics = useCallback(async () => {
     try {
@@ -339,6 +410,24 @@ const StaffDashboard = () => {
 
     return () => window.clearTimeout(timer);
   }, [fetchActiveTasks]);
+
+  useEffect(() => {
+    if (window.location.hash === '#action-queue') {
+      const timer = window.setTimeout(() => {
+        document.getElementById('action-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 150);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      fetchMeetings({ showLoading: false });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [fetchMeetings]);
 
   const handleAdvanceState = async (applicationId, newStatus, extraData = {}) => {
     try {
@@ -466,6 +555,63 @@ const StaffDashboard = () => {
     }
   };
 
+  const openApprovalModal = (meeting) => {
+    setApprovalMeeting(meeting);
+    setMeetingLink(meeting?.meeting_link || '');
+  };
+
+  const closeApprovalModal = () => {
+    setApprovalMeeting(null);
+    setMeetingLink('');
+  };
+
+  const openProposalModal = (meeting) => {
+    setProposalMeeting(meeting);
+    setProposedTime('');
+  };
+
+  const closeProposalModal = () => {
+    setProposalMeeting(null);
+    setProposedTime('');
+  };
+
+  const handleApproveMeeting = async (event) => {
+    event.preventDefault();
+    if (!approvalMeeting?.id) return;
+
+    try {
+      setActionLoading(`meeting-${approvalMeeting.id}`);
+      await axios.put(`/api/meetings/${approvalMeeting.id}/approve`, {
+        meeting_link: meetingLink
+      }, { headers: authHeaders() });
+      closeApprovalModal();
+      await fetchMeetings({ showLoading: false });
+    } catch (error) {
+      console.error('Failed to approve meeting:', error);
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleProposeMeetingTime = async (event) => {
+    event.preventDefault();
+    if (!proposalMeeting?.id) return;
+
+    try {
+      setActionLoading(`propose-meeting-${proposalMeeting.id}`);
+      await axios.put(`/api/meetings/${proposalMeeting.id}/propose`, {
+        proposed_time: proposedTime
+      }, { headers: authHeaders() });
+      closeProposalModal();
+      await fetchMeetings({ showLoading: false });
+    } catch (error) {
+      console.error('Failed to propose meeting time:', error);
+      toast.error(error.response?.data?.error || error.response?.data?.message || 'Failed to propose meeting time.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
   const counselors = (staffMembers || []).filter(member => normalizeDepartment(member) === 'Counselor');
   const visibleApplications = (applications || []).filter(app => {
     if (userDepartment === 'Customer Service') {
@@ -482,6 +628,8 @@ const StaffDashboard = () => {
   });
   const counselorApplications = visibleApplications.filter(app => ['LEAD', 'DOCS_VERIFICATION', 'OFFER_UPLOADED', 'OFFER_APPROVED', 'VISA_PROCESSING'].includes(app?.status));
   const operationsApplications = visibleApplications.filter(app => ['PENDING_OFFER_APPLY', 'OFFER_PROCESSING', 'PAYMENT_VERIFIED'].includes(app?.status));
+  const pendingMeetings = meetings.filter(meeting => ['PENDING', 'PROPOSED', 'STUDENT_ACCEPTED'].includes(meeting?.status));
+  const approvedMeetings = meetings.filter(meeting => meeting?.status === 'APPROVED');
   const getAppId = (app) => app?.app_id || app?.id;
   const statusDistributionData = Object.entries(staffMetrics.status_distribution || {}).map(([status, count]) => ({
     name: status.replace(/_/g, ' '),
@@ -602,7 +750,7 @@ const StaffDashboard = () => {
       </section>
 
       {['Customer Service', 'Counselor', 'Operations'].includes(userDepartment) && (
-        <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+        <section id="action-queue" className="scroll-mt-24 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
           <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm font-bold uppercase tracking-[0.18em] text-slate-400">Department Actions</p>
@@ -678,96 +826,218 @@ const StaffDashboard = () => {
           )}
 
           {userDepartment === 'Counselor' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="p-3">Student</th>
-                    <th className="p-3">Program</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {isLifecycleLoading ? (
-                    <tr><td colSpan="4" className="p-6 text-center text-slate-500">Loading applications...</td></tr>
-                  ) : counselorApplications.length === 0 ? (
-                    <tr><td colSpan="4" className="p-6 text-center text-slate-500">No counselor actions waiting.</td></tr>
-                  ) : counselorApplications.map(app => (
-                    <tr key={getAppId(app)}>
-                      <td className="p-3 font-black text-slate-800">
-                        {app.student_name}
-                        <span className="ml-2 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700">{app.app_uid}</span>
-                      </td>
-                      <td className="p-3 text-slate-600">{app.university_name} / {app.program_name}</td>
-                      <td className="p-3">
-                        <span className={`rounded-full border px-3 py-1 text-xs font-black ${statusBadgeStyles[app.status] || 'bg-slate-50 text-slate-600 border-slate-200'}`}>
-                          {app.status}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right">
-                        {['LEAD', 'DOCS_VERIFICATION'].includes(app.status) && (
-                          <button
-                            type="button"
-                            onClick={() => navigate(app.app_uid ? `/staff/clients?openApp=${encodeURIComponent(app.app_uid)}` : '/staff/clients')}
-                            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700 disabled:opacity-50"
-                          >
-                            <FileCheck2 size={15} />
-                            Review Application
-                          </button>
-                        )}
-                        {['PENDING_OFFER_APPLY', 'OFFER_PROCESSING'].includes(app.status) && (
-                          <span className="inline-flex rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">
-                            Waiting on Operations to process the offer letter...
-                          </span>
-                        )}
-                        {app.status === 'OFFER_UPLOADED' && (
-                          <div className="inline-flex flex-wrap justify-end gap-2">
-                            {app.offer_letter_url && (
-                              <a href={app.offer_letter_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 hover:bg-blue-100">
-                                <FileText size={15} /> View Uploaded Offer
-                              </a>
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-black text-blue-950">Pending Virtual Meetings</h3>
+                    <p className="mt-1 text-sm font-bold text-blue-700">Approve consultation requests and add the meeting link.</p>
+                  </div>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">{pendingMeetings.length}</span>
+                </div>
+                {isMeetingsLoading ? (
+                  <div className="rounded-xl bg-white/70 p-4 text-sm font-bold text-blue-700">Loading meeting requests...</div>
+                ) : pendingMeetings.length === 0 ? (
+                  <div className="rounded-xl bg-white/70 p-4 text-sm font-bold text-blue-700">No pending meeting requests.</div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    {pendingMeetings.map(meeting => (
+                      <article key={meeting.id} className="rounded-2xl border border-blue-100 bg-white p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-black text-slate-950">{meeting.client_name || 'Client'}</p>
+                            <p className="mt-1 text-sm font-bold text-slate-600">{meeting.topic}</p>
+                            <p className="mt-1 text-xs font-bold text-blue-700">
+                              Requested: {formatMeetingDateTime(meeting.requested_time)} · {meeting.duration || 30} mins
+                            </p>
+                            {meeting.status === 'PROPOSED' && (
+                              <p className="mt-2 rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700">
+                                Proposed: {formatMeetingDateTime(meeting.proposed_time)}. Waiting for student response.
+                              </p>
                             )}
-                            <button type="button" onClick={() => handleAdvanceState(getAppId(app), 'OFFER_APPROVED')} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700">
-                              <CheckCircle2 size={15} /> Approved OL
-                            </button>
+                            {meeting.status === 'STUDENT_ACCEPTED' && (
+                              <p className="mt-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
+                                Student accepted the proposed time. Add the meeting link to approve.
+                              </p>
+                            )}
                           </div>
-                        )}
-                        {app.status === 'OFFER_APPROVED' && (
-                          <button type="button" onClick={() => navigate('/staff/invoices')} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-black text-white hover:bg-indigo-700">
-                            <WalletCards size={15} /> Create Invoice
-                          </button>
-                        )}
-                        {app.status === 'VISA_PROCESSING' && (
-                          <div className="inline-flex max-w-lg flex-wrap items-center justify-end gap-2">
-                            <input
-                              type="range"
-                              min="0"
-                              max="100"
-                              value={visaInputs[getAppId(app)] ?? app.visa_progress ?? 0}
-                              onChange={event => setVisaInputs(prev => ({ ...prev, [getAppId(app)]: event.target.value }))}
-                              className="w-28"
-                            />
-                            <span className="w-10 text-xs font-black text-slate-600">{visaInputs[getAppId(app)] ?? app.visa_progress ?? 0}%</span>
-                            <button type="button" onClick={() => handleVisaProgressUpdate(getAppId(app))} className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700">
-                              Update Progress
-                            </button>
+                          <span className={`rounded-full px-3 py-1 text-xs font-black ${
+                            meeting.status === 'STUDENT_ACCEPTED'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : meeting.status === 'PROPOSED'
+                                ? 'bg-indigo-50 text-indigo-700'
+                                : 'bg-amber-50 text-amber-700'
+                          }`}>
+                            {meeting.status === 'STUDENT_ACCEPTED' ? 'Student Accepted' : meeting.status === 'PROPOSED' ? 'Proposed' : 'Pending'}
+                          </span>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {['PENDING', 'STUDENT_ACCEPTED'].includes(meeting.status) && (
                             <button
                               type="button"
-                              onClick={() => handleAdvanceState(getAppId(app), 'VISA_COMPLETED')}
-                              disabled={actionLoading === `${getAppId(app)}-VISA_COMPLETED`}
-                              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-50"
+                              onClick={() => openApprovalModal(meeting)}
+                              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700"
                             >
-                              <CheckCircle2 size={15} />
-                              {actionLoading === `${getAppId(app)}-VISA_COMPLETED` ? 'Updating...' : 'Visa Completed'}
+                              <Video size={15} />
+                              Approve & Link
                             </button>
+                          )}
+                          {meeting.status === 'PENDING' && (
+                            <button
+                              type="button"
+                              onClick={() => openProposalModal(meeting)}
+                              className="inline-flex items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700 hover:bg-indigo-100"
+                            >
+                              <Clock3 size={15} />
+                              Propose New Time
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-black text-emerald-950">Upcoming Approved Meetings</h3>
+                    <p className="mt-1 text-sm font-bold text-emerald-700">Join scheduled virtual consultations when they begin.</p>
+                  </div>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-emerald-700">{approvedMeetings.length}</span>
+                </div>
+                {isMeetingsLoading ? (
+                  <div className="rounded-xl bg-white/70 p-4 text-sm font-bold text-emerald-700">Loading approved meetings...</div>
+                ) : approvedMeetings.length === 0 ? (
+                  <div className="rounded-xl bg-white/70 p-4 text-sm font-bold text-emerald-700">No upcoming meetings scheduled.</div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    {approvedMeetings.map(meeting => (
+                      <article key={meeting.id} className="rounded-2xl border border-emerald-100 bg-white p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <p className="font-black text-slate-950">{meeting.client_name || 'Client'}</p>
+                            <p className="mt-1 text-sm font-bold text-slate-600">{meeting.topic}</p>
+                            <p className="mt-1 text-xs font-bold text-emerald-700">
+                              Scheduled: {formatMeetingDateTime(meeting.requested_time)} · {meeting.duration || 30} mins
+                            </p>
                           </div>
-                        )}
-                      </td>
+                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Approved</span>
+                        </div>
+                        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <MeetingCountdown requestedTime={meeting.requested_time} />
+                          {meeting.meeting_link ? (
+                            <a
+                              href={meeting.meeting_link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white hover:bg-emerald-700"
+                            >
+                              <Video size={15} />
+                              Join Meeting
+                            </a>
+                          ) : (
+                            <span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-500">No link attached</span>
+                          )}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="p-3">Student</th>
+                      <th className="p-3">Program</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {isLifecycleLoading ? (
+                      <tr><td colSpan="4" className="p-6 text-center text-slate-500">Loading applications...</td></tr>
+                    ) : counselorApplications.length === 0 ? (
+                      <tr><td colSpan="4" className="p-6 text-center text-slate-500">No counselor actions waiting.</td></tr>
+                    ) : counselorApplications.map(app => (
+                      <tr key={getAppId(app)}>
+                        <td className="p-3 font-black text-slate-800">
+                          {app.student_name}
+                          <span className="ml-2 rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700">{app.app_uid}</span>
+                        </td>
+                        <td className="p-3 text-slate-600">{app.university_name} / {app.program_name}</td>
+                        <td className="p-3">
+                          <span className={`rounded-full border px-3 py-1 text-xs font-black ${statusBadgeStyles[app.status] || 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                            {app.status}
+                          </span>
+                        </td>
+                        <td className="p-3 text-right">
+                          {['LEAD', 'DOCS_VERIFICATION'].includes(app.status) && (
+                            <button
+                              type="button"
+                              onClick={() => navigate(app.app_uid ? `/staff/clients?openApp=${encodeURIComponent(app.app_uid)}` : '/staff/clients')}
+                              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              <FileCheck2 size={15} />
+                              Review Application
+                            </button>
+                          )}
+                          {['PENDING_OFFER_APPLY', 'OFFER_PROCESSING'].includes(app.status) && (
+                            <span className="inline-flex rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">
+                              Waiting on Operations to process the offer letter...
+                            </span>
+                          )}
+                          {app.status === 'OFFER_UPLOADED' && (
+                            <div className="inline-flex flex-wrap justify-end gap-2">
+                              {app.offer_letter_url && (
+                                <a href={app.offer_letter_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 hover:bg-blue-100">
+                                  <FileText size={15} /> View Uploaded Offer
+                                </a>
+                              )}
+                              <button type="button" onClick={() => handleAdvanceState(getAppId(app), 'OFFER_APPROVED')} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700">
+                                <CheckCircle2 size={15} /> Approved OL
+                              </button>
+                            </div>
+                          )}
+                          {app.status === 'OFFER_APPROVED' && (
+                            <button type="button" onClick={() => navigate('/staff/invoices')} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-black text-white hover:bg-indigo-700">
+                              <WalletCards size={15} /> Create Invoice
+                            </button>
+                          )}
+                          {app.status === 'VISA_PROCESSING' && (
+                            <div className="inline-flex max-w-lg flex-wrap items-center justify-end gap-2">
+                              <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                value={visaInputs[getAppId(app)] ?? app.visa_progress ?? 0}
+                                onChange={event => setVisaInputs(prev => ({ ...prev, [getAppId(app)]: event.target.value }))}
+                                className="w-28"
+                              />
+                              <span className="w-10 text-xs font-black text-slate-600">{visaInputs[getAppId(app)] ?? app.visa_progress ?? 0}%</span>
+                              <button type="button" onClick={() => handleVisaProgressUpdate(getAppId(app))} className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700">
+                                Update Progress
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleAdvanceState(getAppId(app), 'VISA_COMPLETED')}
+                                disabled={actionLoading === `${getAppId(app)}-VISA_COMPLETED`}
+                                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-50"
+                              >
+                                <CheckCircle2 size={15} />
+                                {actionLoading === `${getAppId(app)}-VISA_COMPLETED` ? 'Updating...' : 'Visa Completed'}
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -1057,6 +1327,99 @@ const StaffDashboard = () => {
           </div>
         )}
       </section>
+      {approvalMeeting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-950">Approve Meeting</h2>
+                <p className="mt-1 text-sm font-semibold text-slate-500">
+                  {approvalMeeting.client_name || 'Client'} requested {formatMeetingDateTime(approvalMeeting.requested_time)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeApprovalModal}
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="mb-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Topic</p>
+              <p className="mt-1 text-sm font-black text-slate-900">{approvalMeeting.topic}</p>
+            </div>
+            <form onSubmit={handleApproveMeeting} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">Meeting Link</label>
+                <input
+                  type="url"
+                  value={meetingLink}
+                  onChange={event => setMeetingLink(event.target.value)}
+                  placeholder="https://meet.google.com/... or https://zoom.us/..."
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-blue-300 focus:bg-white focus:ring-4 focus:ring-blue-50"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={actionLoading === `meeting-${approvalMeeting.id}`}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 text-sm font-black text-white shadow-sm hover:bg-blue-700 disabled:opacity-60"
+              >
+                <Video size={18} />
+                {actionLoading === `meeting-${approvalMeeting.id}` ? 'Approving...' : 'Approve & Notify Client'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+      {proposalMeeting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-950">Propose New Time</h2>
+                <p className="mt-1 text-sm font-semibold text-slate-500">
+                  Suggest a new consultation time for {proposalMeeting.client_name || 'the client'}.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeProposalModal}
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="mb-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Requested</p>
+              <p className="mt-1 text-sm font-black text-slate-900">{formatMeetingDateTime(proposalMeeting.requested_time)}</p>
+              <p className="mt-1 text-xs font-bold text-slate-500">{proposalMeeting.topic}</p>
+            </div>
+            <form onSubmit={handleProposeMeetingTime} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">Proposed Date & Time</label>
+                <input
+                  type="datetime-local"
+                  min={getDatetimeLocalMin()}
+                  value={proposedTime}
+                  onChange={event => setProposedTime(event.target.value)}
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-blue-300 focus:bg-white focus:ring-4 focus:ring-blue-50"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={actionLoading === `propose-meeting-${proposalMeeting.id}`}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 text-sm font-black text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60"
+              >
+                <Clock3 size={18} />
+                {actionLoading === `propose-meeting-${proposalMeeting.id}` ? 'Sending Proposal...' : 'Send Proposed Time'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

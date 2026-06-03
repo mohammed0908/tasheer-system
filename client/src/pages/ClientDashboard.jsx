@@ -14,7 +14,9 @@ import {
   FileText,
   MessageCircle,
   Plane,
-  Upload
+  Upload,
+  Video,
+  X
 } from 'lucide-react';
 import ClientDocumentsGrid from '../components/ClientDocumentsGrid';
 import PaymentGatewayModal from '../components/PaymentGatewayModal';
@@ -39,6 +41,20 @@ const formatCurrentDate = () => new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
   year: 'numeric'
 }).format(new Date());
+
+const formatMeetingDateTime = (value) => {
+  if (!value) return 'Not scheduled';
+  return new Intl.DateTimeFormat('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  }).format(new Date(value));
+};
+
+const getDatetimeLocalMin = () => {
+  const date = new Date(Date.now() + 60 * 60 * 1000);
+  date.setSeconds(0, 0);
+  return date.toISOString().slice(0, 16);
+};
 
 const getStage = (client) => {
   if (!client?.application_id) return 'No Application';
@@ -74,6 +90,11 @@ const ClientDashboard = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [pendingInvoice, setPendingInvoice] = useState(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [meetings, setMeetings] = useState([]);
+  const [meetingCountdownTick, setMeetingCountdownTick] = useState(0);
+  const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
+  const [meetingForm, setMeetingForm] = useState({ topic: '', requested_time: '', duration: '30' });
+  const [isSubmittingMeeting, setIsSubmittingMeeting] = useState(false);
   const [error, setError] = useState('');
   const [flightForm, setFlightForm] = useState({
     arrival_date: '',
@@ -140,15 +161,48 @@ const ClientDashboard = () => {
     }
   }, []);
 
+  const fetchMeetings = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.get('/api/meetings', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setMeetings(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error('Failed to fetch meetings:', err);
+      setMeetings([]);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       fetchClientProfile();
       fetchClientDocuments();
       fetchPendingInvoice();
+      fetchMeetings();
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [fetchClientDocuments, fetchClientProfile, fetchPendingInvoice]);
+  }, [fetchClientDocuments, fetchClientProfile, fetchMeetings, fetchPendingInvoice]);
+
+  useEffect(() => {
+    const startTimer = window.setTimeout(() => setMeetingCountdownTick(Date.now()), 0);
+    const interval = window.setInterval(() => setMeetingCountdownTick(Date.now()), 1000);
+    return () => {
+      window.clearTimeout(startTimer);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (window.location.hash === '#consultation') {
+      const timer = window.setTimeout(() => {
+        document.getElementById('consultation')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 150);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, []);
 
   useEffect(() => {
     if (clientProfile?.app_status === 'OFFER_UPLOADED') {
@@ -200,6 +254,88 @@ const ClientDashboard = () => {
     (Number(clientProfile?.visa_progress || 0) >= 100 && clientProfile?.app_status === 'FLIGHT_BOOKED') ||
     clientProfile?.app_status === 'ARRIVED'
   );
+  const upcomingMeetings = meetings.filter(meeting => ['PENDING', 'PROPOSED', 'STUDENT_ACCEPTED', 'APPROVED'].includes(meeting?.status));
+  const meetingStatusStyles = {
+    PENDING: 'bg-amber-50 text-amber-700',
+    PROPOSED: 'bg-indigo-50 text-indigo-700',
+    STUDENT_ACCEPTED: 'bg-blue-50 text-blue-700',
+    APPROVED: 'bg-emerald-50 text-emerald-700'
+  };
+  const meetingStatusLabels = {
+    PENDING: 'Waiting for Counselor Approval',
+    PROPOSED: 'Counselor Proposed a New Time',
+    STUDENT_ACCEPTED: 'Waiting for Counselor Approval',
+    APPROVED: 'Approved'
+  };
+
+  const handleRequestMeeting = async (event) => {
+    event.preventDefault();
+    if (!clientProfile?.application_id) return;
+
+    try {
+      setIsSubmittingMeeting(true);
+      const token = localStorage.getItem('token');
+      await axios.post('/api/meetings', {
+        application_id: clientProfile.application_id,
+        topic: meetingForm.topic,
+        requested_time: meetingForm.requested_time,
+        duration: Number(meetingForm.duration)
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Meeting request sent to your counselor.');
+      setMeetingForm({ topic: '', requested_time: '', duration: '30' });
+      setIsMeetingModalOpen(false);
+      await fetchMeetings();
+    } catch (err) {
+      const message = err.response?.data?.message || 'Failed to request meeting.';
+      toast.error(message);
+      setError(message);
+    } finally {
+      setIsSubmittingMeeting(false);
+    }
+  };
+
+  const handleAcceptProposedMeeting = async (meetingId) => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(`/api/meetings/${meetingId}/student-accept`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Proposed meeting time accepted.');
+      await fetchMeetings();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to accept proposed time.');
+    }
+  };
+
+  const handleCancelMeeting = async (meetingId) => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(`/api/meetings/${meetingId}/cancel`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Meeting request cancelled.');
+      await fetchMeetings();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to cancel meeting.');
+    }
+  };
+
+  const getMeetingCountdown = (meeting) => {
+    if (!meetingCountdownTick) return 'Starts in: --d --h --m --s';
+    const diff = new Date(meeting?.requested_time).getTime() - meetingCountdownTick;
+    if (!Number.isFinite(diff) || diff <= 0) return 'Meeting is Starting Now';
+
+    const totalSeconds = Math.floor(diff / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (value) => String(value).padStart(2, '0');
+
+    return `Starts in: ${pad(days)}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
+  };
 
   const handleFlightBooking = async (event) => {
     event.preventDefault();
@@ -355,6 +491,90 @@ const ClientDashboard = () => {
           <KpiCard key={kpi.label} {...kpi} />
         ))}
       </section>
+
+      {hasApplication && (
+        <section id="consultation" className="scroll-mt-24 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="inline-flex rounded-xl border border-blue-100 bg-blue-50 p-2.5 text-blue-600">
+                <Video size={20} />
+              </div>
+              <h3 className="mt-3 text-xl font-black text-slate-950">Virtual Consultation</h3>
+              <p className="mt-1 text-sm font-bold text-slate-500">Request a meeting with your assigned counselor and join once approved.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsMeetingModalOpen(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-blue-700"
+            >
+              <Video size={17} />
+              Request Consultation
+            </button>
+          </div>
+
+          <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
+            {upcomingMeetings.length === 0 ? (
+              <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-bold text-slate-500">
+                No pending or approved meetings yet.
+              </div>
+            ) : upcomingMeetings.map(meeting => (
+              <article key={meeting.id} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-black text-slate-950">{meeting.topic}</p>
+                    <p className="mt-1 text-xs font-bold text-slate-500">
+                      Requested: {formatMeetingDateTime(meeting.requested_time)} · {meeting.duration || 30} mins
+                    </p>
+                    {meeting.status === 'PROPOSED' && (
+                      <p className="mt-2 rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700">
+                        Counselor proposed a new time: {formatMeetingDateTime(meeting.proposed_time)}
+                      </p>
+                    )}
+                    <p className="mt-1 text-xs font-semibold text-slate-400">Counselor: {meeting.counselor_name || 'Assigned counselor'}</p>
+                  </div>
+                  <span className={`rounded-full px-3 py-1 text-xs font-black ${meetingStatusStyles[meeting.status] || 'bg-slate-100 text-slate-600'}`}>
+                    {meetingStatusLabels[meeting.status] || meeting.status}
+                  </span>
+                </div>
+                {meeting.status === 'PROPOSED' && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleAcceptProposedMeeting(meeting.id)}
+                      className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-black text-white hover:bg-emerald-700"
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCancelMeeting(meeting.id)}
+                      className="inline-flex items-center justify-center rounded-xl border border-rose-100 bg-rose-50 px-4 py-2 text-sm font-black text-rose-700 hover:bg-rose-100"
+                    >
+                      Decline/Cancel
+                    </button>
+                  </div>
+                )}
+                {meeting.status === 'APPROVED' && meeting.meeting_link && (
+                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span className={`inline-flex rounded-xl px-3 py-2 text-sm font-black ${getMeetingCountdown(meeting) === 'Meeting is Starting Now' ? 'bg-rose-600 text-white' : 'bg-emerald-50 text-emerald-700'}`}>
+                      {getMeetingCountdown(meeting)}
+                    </span>
+                    <a
+                      href={meeting.meeting_link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-black text-white shadow-sm ${getMeetingCountdown(meeting) === 'Meeting is Starting Now' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                    >
+                      <Video size={16} />
+                      Join Meeting
+                    </a>
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {isPendingMissingDocs && (
         <section className="rounded-2xl border border-amber-200 bg-amber-50 p-6 shadow-sm">
@@ -600,6 +820,67 @@ const ClientDashboard = () => {
           ]);
         }}
       />
+      {isMeetingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-950">Request Consultation</h2>
+                <p className="mt-1 text-sm font-semibold text-slate-500">Choose a topic and preferred meeting time.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMeetingModalOpen(false)}
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleRequestMeeting} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">Topic</label>
+                <input
+                  value={meetingForm.topic}
+                  onChange={event => setMeetingForm(prev => ({ ...prev, topic: event.target.value }))}
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-blue-300 focus:bg-white focus:ring-4 focus:ring-blue-50"
+                  placeholder="Visa questions, admission documents..."
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">Preferred Date & Time</label>
+                <input
+                  type="datetime-local"
+                  min={getDatetimeLocalMin()}
+                  value={meetingForm.requested_time}
+                  onChange={event => setMeetingForm(prev => ({ ...prev, requested_time: event.target.value }))}
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-blue-300 focus:bg-white focus:ring-4 focus:ring-blue-50"
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">Duration</label>
+                <select
+                  value={meetingForm.duration}
+                  onChange={event => setMeetingForm(prev => ({ ...prev, duration: event.target.value }))}
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-blue-300 focus:bg-white focus:ring-4 focus:ring-blue-50"
+                >
+                  <option value="30">30 mins</option>
+                  <option value="60">60 mins</option>
+                </select>
+              </div>
+              <button
+                type="submit"
+                disabled={isSubmittingMeeting}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 text-sm font-black text-white shadow-sm hover:bg-blue-700 disabled:opacity-60"
+              >
+                <Video size={18} />
+                {isSubmittingMeeting ? 'Sending Request...' : 'Send Meeting Request'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
