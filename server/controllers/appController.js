@@ -5,6 +5,8 @@ import { sendAdmissionDoneEmail, sendInvoiceReadyEmail, sendPaymentVerifiedEmail
 
 const APPLICATION_STATUSES = [
   'LEAD',
+  'PENDING_CS_REVIEW',
+  'COUNSELOR_ASSIGNED',
   'PENDING_DOCS',
   'DOCS_VERIFICATION',
   'APPLIED_FOR_OL',
@@ -34,6 +36,8 @@ const strictStatusEnumSql = `ENUM(${APPLICATION_STATUSES.map(status => `'${statu
 const legacyApplicationStatuses = ['ACCOMMODATION_READY', 'FLIGHT_BOOKED', 'ARRIVED', 'MEDICAL_CLEARED', 'COMPLETED'];
 const transitionRoles = {
   LEAD: ['Customer Service'],
+  PENDING_CS_REVIEW: ['Customer Service'],
+  COUNSELOR_ASSIGNED: ['Customer Service'],
   DOCS_VERIFICATION: ['Customer Service'],
   PENDING_OFFER_APPLY: ['Counselor'],
   OFFER_PROCESSING: ['Operations'],
@@ -333,6 +337,7 @@ export const createApplication = async (req, res) => {
 
   try {
     await ensureApplicationLifecycleSchema(connection);
+    await ensureNotificationsTable(connection);
     await ensureTaskColumns(connection);
 
     if (req.user.role === 'staff' || req.user.role === 'admin') {
@@ -499,6 +504,173 @@ export const createApplication = async (req, res) => {
   }
 };
 
+// @desc    Client creates their own application for Customer Service review
+// @route   POST /api/applications/client-create
+// @access  Private/Client
+export const createClientApplication = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await ensureApplicationLifecycleSchema(connection);
+
+    const {
+      full_name,
+      nationality,
+      passport_number,
+      phone,
+      email,
+      country_of_residence,
+      city,
+      country,
+      study_location,
+      university_name,
+      study_program,
+      program_name,
+      visa_type,
+      qualification,
+      duration_months,
+      guardian_name,
+      guardian_phone,
+      guardian_email
+    } = req.body;
+
+    const targetCountry = country || study_location;
+    const programName = study_program || program_name;
+    const applicantName = full_name || req.user.full_name || null;
+    const applicantEmail = email || req.user.email || null;
+
+    if (!targetCountry || !university_name || !programName || !visa_type) {
+      return res.status(400).json({
+        message: 'Desired country, university, major, and visa type are required'
+      });
+    }
+
+    const activeStatuses = APPLICATION_STATUSES.filter(status => status !== 'VISA_COMPLETED');
+    const [existingApplications] = await connection.query(
+      `SELECT id
+       FROM applications
+       WHERE (client_id = ? OR student_id = ?)
+         AND status IN (${activeStatuses.map(() => '?').join(', ')})
+       LIMIT 1`,
+      [req.user.id, req.user.id, ...activeStatuses]
+    );
+
+    if (existingApplications.length > 0) {
+      return res.status(400).json({ message: 'Application already exists' });
+    }
+
+    await connection.beginTransaction();
+
+    const studentValues = [
+      passport_number || null,
+      nationality || null,
+      phone || null,
+      country_of_residence || null,
+      city || null,
+      guardian_name || null,
+      guardian_phone || null,
+      guardian_email || null
+    ];
+    const [existingStudentRows] = await connection.query(
+      'SELECT user_id FROM students WHERE user_id = ? LIMIT 1',
+      [req.user.id]
+    );
+
+    if (existingStudentRows.length > 0) {
+      await connection.query(
+        `UPDATE students
+         SET passport_no = ?, nationality = ?, phone = ?, country_of_residence = ?, city = ?, guardian_name = ?, guardian_phone = ?, guardian_email = ?
+         WHERE user_id = ?`,
+        [...studentValues, req.user.id]
+      );
+    } else {
+      await connection.query(
+        `INSERT INTO students
+          (user_id, passport_no, nationality, phone, country_of_residence, city, guardian_name, guardian_phone, guardian_email)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [req.user.id, ...studentValues]
+      );
+    }
+
+    const appUid = await generateApplicationUid(connection);
+    const [result] = await connection.query(
+      `INSERT INTO applications
+        (app_uid, student_id, client_id, counselor_id, assigned_staff_id, current_stage, status, university_name, program_name, study_location, qualification, study_duration_months, applicant_name, application_email, applicant_phone, applicant_passport_no, applicant_nationality, applicant_country_of_residence, applicant_city, guardian_name, guardian_phone, guardian_email)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        appUid,
+        req.user.id,
+        req.user.id,
+        null,
+        null,
+        1,
+        'PENDING_CS_REVIEW',
+        university_name,
+        programName,
+        targetCountry,
+        qualification || visa_type,
+        duration_months || null,
+        applicantName,
+        applicantEmail,
+        phone || null,
+        passport_number || null,
+        nationality || null,
+        country_of_residence || null,
+        city || null,
+        guardian_name || null,
+        guardian_phone || null,
+        guardian_email || null
+      ]
+    );
+    const applicationId = result.insertId;
+
+    const [customerServiceStaff] = await connection.query(
+      `SELECT id
+       FROM users
+       WHERE role = 'staff'
+         AND (
+          department = 'Customer Service'
+          OR job_title = 'Customer Service Officer'
+          OR job_title LIKE '%Customer Service%'
+         )`
+    );
+
+    for (const staff of customerServiceStaff) {
+      await connection.query(
+        `INSERT INTO notifications (user_id, message, type, application_id, app_uid, target_url, is_read)
+         VALUES (?, ?, 'client_application_created', ?, ?, ?, FALSE)`,
+        [
+          staff.id,
+          `New student application submitted for review: ${appUid}.`,
+          applicationId,
+          appUid,
+          `/staff/clients?openApp=${encodeURIComponent(appUid)}`
+        ]
+      );
+    }
+
+    await connection.commit();
+
+    res.status(201).json({
+      message: 'Application submitted for Customer Service review',
+      applicationId,
+      application_id: applicationId,
+      app_uid: appUid,
+      status: 'PENDING_CS_REVIEW'
+    });
+  } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (rollbackError) {
+      console.error('Rollback failed:', rollbackError);
+    }
+    console.error('Error in createClientApplication:', error);
+    res.status(500).json({ message: 'Server error while creating application' });
+  } finally {
+    connection.release();
+  }
+};
+
 // @desc    Get logged in client's application
 // @route   GET /api/applications/my-application
 // @access  Private/Client
@@ -548,8 +720,8 @@ export const getAllApplications = async (req, res) => {
 
     if (requester.role !== 'admin') {
       if (requesterDepartment === 'Customer Service') {
-        whereClauses.push('applications.created_by_cs_id = ?');
-        queryParams.push(req.user.id);
+        whereClauses.push('(applications.created_by_cs_id = ? OR applications.counselor_id IS NULL OR applications.status = ?)');
+        queryParams.push(req.user.id, 'PENDING_CS_REVIEW');
       } else if (requesterDepartment === 'Counselor') {
         whereClauses.push('(applications.counselor_id = ? OR applications.assigned_staff_id = ? OR applications.created_by_cs_id = ?)');
         queryParams.push(req.user.id, req.user.id, req.user.id);
@@ -673,10 +845,11 @@ export const updateVisaProgress = async (req, res) => {
     await ensureApplicationLifecycleSchema();
 
     const applicationId = req.params.id;
-    const visaProgress = Math.max(0, Math.min(100, Number(req.body.visa_progress)));
+    const rawProgress = req.body.progress ?? req.body.visa_progress;
+    const visaProgress = Number(rawProgress);
 
-    if (Number.isNaN(visaProgress)) {
-      return res.status(400).json({ message: 'visa_progress must be a number from 0 to 100' });
+    if (!Number.isFinite(visaProgress) || visaProgress < 0 || visaProgress > 100) {
+      return res.status(400).json({ message: 'progress must be a number from 0 to 100' });
     }
 
     const [actorRows] = await db.query(
@@ -689,9 +862,10 @@ export const updateVisaProgress = async (req, res) => {
       return res.status(403).json({ message: 'Only Counselor staff can update visa progress' });
     }
 
+    const nextStatus = visaProgress === 100 ? 'VISA_COMPLETED' : 'VISA_PROCESSING';
     const [result] = await db.query(
-      "UPDATE applications SET visa_progress = ? WHERE id = ? AND status = 'VISA_PROCESSING'",
-      [visaProgress, applicationId]
+      "UPDATE applications SET visa_progress = ?, status = ? WHERE id = ? AND status = 'VISA_PROCESSING'",
+      [visaProgress, nextStatus, applicationId]
     );
 
     if (result.affectedRows === 0) {
@@ -699,7 +873,29 @@ export const updateVisaProgress = async (req, res) => {
     }
 
     const [applications] = await db.query('SELECT * FROM applications WHERE id = ?', [applicationId]);
-    res.json({ message: 'Visa progress updated', application: applications[0] });
+    const updatedApplication = applications[0];
+    const clientId = updatedApplication?.student_id || updatedApplication?.client_id;
+
+    if (clientId) {
+      const io = req.app?.get('io');
+      const onlineUsers = req.app?.get('onlineUsers');
+      const targetSocketId = onlineUsers?.get(String(clientId));
+      const payload = {
+        application_id: Number(applicationId),
+        client_id: Number(clientId),
+        visa_progress: visaProgress,
+        status: nextStatus
+      };
+
+      if (io && targetSocketId) {
+        io.to(targetSocketId).emit('visa_progress_updated', payload);
+      }
+    }
+
+    res.json({
+      message: visaProgress === 100 ? 'Visa progress completed' : 'Visa progress updated',
+      application: updatedApplication
+    });
   } catch (error) {
     console.error('Error in updateVisaProgress:', error);
     res.status(500).json({ message: 'Server error while updating visa progress' });
@@ -733,6 +929,116 @@ export const assignApplication = async (req, res) => {
   } catch (error) {
     console.error('Error in assignApplication:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Customer Service assigns a client-created application to a Counselor
+// @route   PUT /api/applications/:id/assign-counselor
+// @access  Private/Customer Service/Admin
+export const assignCounselorToApplication = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await ensureApplicationLifecycleSchema(connection);
+    await ensureTaskColumns(connection);
+    await ensureNotificationsTable(connection);
+
+    const applicationId = req.params.id;
+    const counselorId = Number(req.body.counselor_id);
+
+    if (!counselorId) {
+      return res.status(400).json({ message: 'counselor_id is required' });
+    }
+
+    const [actorRows] = await connection.query(
+      'SELECT id, role, department, job_title, full_name FROM users WHERE id = ?',
+      [req.user.id]
+    );
+    const actor = actorRows[0];
+    const actorDepartment = normalizeDepartment(actor);
+
+    if (!actor || (actor.role !== 'admin' && actorDepartment !== 'Customer Service')) {
+      return res.status(403).json({ message: 'Only Customer Service can assign counselors' });
+    }
+
+    const [counselorRows] = await connection.query(
+      `SELECT id, full_name, department, job_title
+       FROM users
+       WHERE id = ? AND role = 'staff'
+       LIMIT 1`,
+      [counselorId]
+    );
+    const counselor = counselorRows[0];
+
+    if (!counselor || normalizeDepartment(counselor) !== 'Counselor') {
+      return res.status(400).json({ message: 'Selected user must be a Counselor' });
+    }
+
+    const [applicationRows] = await connection.query(
+      `SELECT id, app_uid, counselor_id, status
+       FROM applications
+       WHERE id = ?
+       LIMIT 1`,
+      [applicationId]
+    );
+
+    if (applicationRows.length === 0) {
+      return res.status(404).json({ message: 'Application not found' });
+    }
+
+    const application = applicationRows[0];
+    if (application.counselor_id && application.status !== 'PENDING_CS_REVIEW') {
+      return res.status(400).json({ message: 'Application is already assigned' });
+    }
+
+    await connection.beginTransaction();
+
+    await connection.query(
+      `UPDATE applications
+       SET counselor_id = ?,
+           assigned_staff_id = ?,
+           created_by_cs_id = COALESCE(created_by_cs_id, ?),
+           status = 'COUNSELOR_ASSIGNED'
+       WHERE id = ?`,
+      [counselorId, counselorId, req.user.id, applicationId]
+    );
+
+    await createCounselorApplicationTask(connection, {
+      applicationId,
+      appUid: application.app_uid,
+      counselorId,
+      createdByName: actor.full_name || 'Customer Service'
+    });
+
+    await connection.commit();
+
+    const [updatedRows] = await connection.query(
+      `SELECT
+        a.*,
+        COALESCE(student_user.full_name, a.applicant_name) AS student_name,
+        COALESCE(student_user.email, a.application_email) AS student_email,
+        counselor.full_name AS assigned_staff_name
+       FROM applications a
+       LEFT JOIN users student_user ON a.student_id = student_user.id
+       LEFT JOIN users counselor ON a.assigned_staff_id = counselor.id
+       WHERE a.id = ?`,
+      [applicationId]
+    );
+
+    res.json({
+      message: 'Counselor assigned successfully',
+      application: updatedRows[0]
+    });
+  } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (rollbackError) {
+      console.error('Rollback failed:', rollbackError);
+    }
+    console.error('Error in assignCounselorToApplication:', error);
+    res.status(500).json({ message: 'Server error while assigning counselor' });
+  } finally {
+    connection.release();
   }
 };
 
@@ -778,7 +1084,7 @@ export const advanceApplicationState = async (req, res) => {
     }
 
     const [applicationRows] = await connection.query(
-      'SELECT id, app_uid, student_id, status, visa_progress, accommodation_id, applicant_name, counselor_id, assigned_staff_id FROM applications WHERE id = ?',
+      'SELECT id, app_uid, student_id, client_id, status, visa_progress, accommodation_id, applicant_name, counselor_id, assigned_staff_id FROM applications WHERE id = ?',
       [applicationId]
     );
 
@@ -943,6 +1249,44 @@ export const advanceApplicationState = async (req, res) => {
       }
     }
 
+    if (actorDepartment === 'Operations' && new_status === 'OFFER_UPLOADED') {
+      await ensureNotificationsTable(connection);
+
+      const studentId = application.student_id || application.client_id;
+      const counselorId = application.counselor_id || application.assigned_staff_id;
+      const appUid = application.app_uid || `application #${applicationId}`;
+
+      if (studentId) {
+        await connection.query(
+          `INSERT INTO notifications (user_id, message, type, application_id, app_uid, target_url, is_read)
+           VALUES (?, ?, ?, ?, ?, ?, FALSE)`,
+          [
+            studentId,
+            `Your offer letter has been uploaded for ${appUid}. Please open your portal to review it.`,
+            'offer_letter_uploaded',
+            applicationId,
+            application.app_uid,
+            '/client'
+          ]
+        );
+      }
+
+      if (counselorId) {
+        await connection.query(
+          `INSERT INTO notifications (user_id, message, type, application_id, app_uid, target_url, is_read)
+           VALUES (?, ?, ?, ?, ?, ?, FALSE)`,
+          [
+            counselorId,
+            `Offer letter uploaded for ${appUid}. Please review and approve it.`,
+            'offer_letter_uploaded',
+            applicationId,
+            application.app_uid,
+            application.app_uid ? `/staff/clients?openApp=${encodeURIComponent(application.app_uid)}` : `/staff/clients?openApp=${applicationId}`
+          ]
+        );
+      }
+    }
+
     const [updatedRows] = await connection.query(
       `SELECT
         a.*,
@@ -1020,8 +1364,8 @@ export const requestMissingDocuments = async (req, res) => {
     const actor = actorRows[0];
     const actorDepartment = normalizeDepartment(actor);
 
-    if (actor?.role !== 'admin' && actorDepartment !== 'Counselor') {
-      return res.status(403).json({ message: 'Only counselors or admins can request missing documents' });
+    if (actor?.role !== 'admin' && !['Counselor', 'Customer Service'].includes(actorDepartment)) {
+      return res.status(403).json({ message: 'Only counselors, customer service, or admins can request missing documents' });
     }
 
     const [applications] = await db.query(
@@ -1029,7 +1373,10 @@ export const requestMissingDocuments = async (req, res) => {
         a.id,
         a.app_uid,
         a.student_id,
+        a.created_by_cs_id,
         a.counselor_id,
+        a.assigned_staff_id,
+        a.status,
         student.full_name AS student_name
        FROM applications a
        JOIN users student ON a.student_id = student.id
@@ -1042,11 +1389,22 @@ export const requestMissingDocuments = async (req, res) => {
     }
 
     const application = applications[0];
-    if (actor?.role !== 'admin' && Number(application.counselor_id) !== Number(req.user.id)) {
+    if (actor?.role !== 'admin' && actorDepartment === 'Counselor' && Number(application.counselor_id) !== Number(req.user.id)) {
       return res.status(403).json({ message: 'You can only request documents for applications assigned to you' });
     }
 
-    const missingDocsNote = req.body.missing_docs_note || 'Please upload the missing documents requested by your counselor.';
+    if (
+      actor?.role !== 'admin' &&
+      actorDepartment === 'Customer Service' &&
+      application.counselor_id &&
+      application.status !== 'PENDING_CS_REVIEW' &&
+      Number(application.created_by_cs_id) !== Number(req.user.id)
+    ) {
+      return res.status(403).json({ message: 'You can only request documents for applications pending Customer Service review' });
+    }
+
+    const requesterLabel = actorDepartment === 'Customer Service' ? 'Customer Service' : 'your counselor';
+    const missingDocsNote = req.body.missing_docs_note || `Please upload the missing documents requested by ${requesterLabel}.`;
     await ensureNotificationsTable();
 
     await db.query(
@@ -1059,7 +1417,7 @@ export const requestMissingDocuments = async (req, res) => {
        VALUES (?, ?, 'missing_documents', ?, ?, ?, FALSE)`,
       [
         application.student_id,
-        `Your counselor marked documents as missing for ${application.app_uid}. Please upload the required documents.`,
+        `${requesterLabel} marked documents as missing for ${application.app_uid}. Please upload the required documents.`,
         application.id,
         application.app_uid,
         '/client'
@@ -1327,12 +1685,14 @@ export const uploadMissingDocuments = async (req, res) => {
       );
     }
 
+    const counselorId = application.counselor_id || application.assigned_staff_id;
+    const nextStatus = counselorId ? 'DOCS_VERIFICATION' : 'PENDING_CS_REVIEW';
+
     await connection.query(
-      "UPDATE applications SET status = 'DOCS_VERIFICATION', missing_docs_note = NULL WHERE id = ?",
-      [applicationId]
+      'UPDATE applications SET status = ?, missing_docs_note = NULL WHERE id = ?',
+      [nextStatus, applicationId]
     );
 
-    const counselorId = application.counselor_id || application.assigned_staff_id;
     if (counselorId) {
       await connection.query(
         `INSERT INTO notifications (user_id, message, type, application_id, app_uid, target_url, is_read)
@@ -1345,15 +1705,42 @@ export const uploadMissingDocuments = async (req, res) => {
           `/staff/clients?openApp=${encodeURIComponent(application.app_uid)}`
         ]
       );
+    } else {
+      const [customerServiceStaff] = await connection.query(
+        `SELECT id
+         FROM users
+         WHERE role = 'staff'
+           AND (
+            department = 'Customer Service'
+            OR job_title = 'Customer Service Officer'
+            OR job_title LIKE '%Customer Service%'
+           )`
+      );
+
+      for (const staff of customerServiceStaff) {
+        await connection.query(
+          `INSERT INTO notifications (user_id, message, type, application_id, app_uid, target_url, is_read)
+           VALUES (?, ?, 'missing_documents_uploaded', ?, ?, ?, FALSE)`,
+          [
+            staff.id,
+            `Missing documents were uploaded for ${application.app_uid}. Please continue Customer Service review.`,
+            applicationId,
+            application.app_uid,
+            `/staff/clients?openApp=${encodeURIComponent(application.app_uid)}`
+          ]
+        );
+      }
     }
 
     await connection.commit();
 
     res.json({
-      message: 'Missing documents uploaded and returned to document verification',
+      message: counselorId
+        ? 'Missing documents uploaded and returned to document verification'
+        : 'Missing documents uploaded and returned to Customer Service review',
       application_id: applicationId,
       app_uid: application.app_uid,
-      status: 'DOCS_VERIFICATION'
+      status: nextStatus
     });
   } catch (error) {
     await connection.rollback();

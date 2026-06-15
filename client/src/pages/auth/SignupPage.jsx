@@ -7,7 +7,7 @@ import AuthShell from './AuthShell';
 import { getPasswordScore, passwordRules } from './passwordRules';
 
 const SignupPage = () => {
-  const [formData, setFormData] = useState({ name: '', email: '', password: '' });
+  const [formData, setFormData] = useState({ name: '', email: '', password: '', confirmPassword: '' });
   const [otp, setOtp] = useState('');
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [error, setError] = useState('');
@@ -16,6 +16,8 @@ const SignupPage = () => {
   const [isVerifying, setIsVerifying] = useState(false);
   const navigate = useNavigate();
   const passwordScore = getPasswordScore(formData.password);
+  const passwordsMatch = formData.password === formData.confirmPassword;
+  const showPasswordMismatch = formData.confirmPassword.length > 0 && !passwordsMatch;
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -25,10 +27,21 @@ const SignupPage = () => {
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError('');
+
+    if (!passwordsMatch) {
+      setError('Passwords do not match.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      const res = await axios.post('/api/auth/register', formData);
+      const registrationData = {
+        name: formData.name,
+        email: formData.email,
+        password: formData.password
+      };
+      const res = await axios.post('/api/auth/register', registrationData);
       toast.success(res.data?.message || 'OTP sent to your email.');
       setShowOtpModal(true);
     } catch (err) {
@@ -102,6 +115,25 @@ const SignupPage = () => {
           />
         </div>
 
+        <div>
+          <label className="mb-1 block text-sm font-bold text-slate-700">Confirm Password</label>
+          <input
+            type="password"
+            name="confirmPassword"
+            value={formData.confirmPassword}
+            onChange={handleChange}
+            className={`h-12 w-full rounded-xl border bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:bg-white focus:ring-4 ${
+              showPasswordMismatch
+                ? 'border-rose-200 focus:border-rose-300 focus:ring-rose-50'
+                : 'border-slate-200 focus:border-blue-300 focus:ring-blue-50'
+            }`}
+            required
+          />
+          {showPasswordMismatch && (
+            <p className="mt-2 text-xs font-bold text-rose-600">Passwords do not match.</p>
+          )}
+        </div>
+
         <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
           <div className="h-2 overflow-hidden rounded-full bg-slate-200">
             <div
@@ -124,7 +156,7 @@ const SignupPage = () => {
 
         <button
           type="submit"
-          disabled={isLoading || passwordScore < passwordRules.length}
+          disabled={isLoading || passwordScore < passwordRules.length || !passwordsMatch}
           className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 text-sm font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <UserPlus size={18} />

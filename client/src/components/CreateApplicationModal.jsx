@@ -24,6 +24,7 @@ const initialFormData = {
   qualification: '',
   study_location: '',
   duration_months: '',
+  visa_type: 'Student Visa',
   guardian_name: '',
   guardian_phone: '',
   guardian_email: '',
@@ -79,21 +80,26 @@ const getApiErrorMessage = (err, fallback = 'Failed to submit application.') => 
   fallback
 );
 
-const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
+const CreateApplicationModal = ({ isOpen, onClose, onSuccess, mode }) => {
+  const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
+  const currentDepartment = normalizeDepartment(currentUser);
+  const isClientMode = mode === 'client' || currentUser.role === 'client';
+  const isCounselorCreator = currentDepartment === 'Counselor';
   const [currentStep, setCurrentStep] = useState(1);
-  const [formData, setFormData] = useState(initialFormData);
+  const [formData, setFormData] = useState(() => ({
+    ...initialFormData,
+    full_name: isClientMode ? currentUser.full_name || currentUser.name || '' : '',
+    email: isClientMode ? currentUser.email || '' : ''
+  }));
   const [files, setFiles] = useState(initialFiles);
   const [isAgreed, setIsAgreed] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [counselors, setCounselors] = useState([]);
-  const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-  const currentDepartment = normalizeDepartment(currentUser);
-  const isCounselorCreator = currentDepartment === 'Counselor';
 
   useEffect(() => {
     if (!isOpen) return undefined;
-    if (isCounselorCreator) {
+    if (isClientMode || isCounselorCreator) {
       return undefined;
     }
 
@@ -111,13 +117,17 @@ const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [isCounselorCreator, isOpen]);
+  }, [isClientMode, isCounselorCreator, isOpen]);
 
   if (!isOpen) return null;
 
   const resetModal = () => {
     setCurrentStep(1);
-    setFormData(initialFormData);
+    setFormData({
+      ...initialFormData,
+      full_name: isClientMode ? currentUser.full_name || currentUser.name || '' : '',
+      email: isClientMode ? currentUser.email || '' : ''
+    });
     setFiles(initialFiles);
     setIsAgreed(false);
     setError('');
@@ -148,9 +158,11 @@ const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
         uploadData.append('document', file);
         uploadData.append('application_id', applicationId);
         uploadData.append('document_type', documentType);
-        uploadData.append('uploaded_by_role', 'staff');
+        uploadData.append('uploaded_by_role', isClientMode ? 'client' : 'staff');
 
-        return axios.post('/api/documents', uploadData, {
+        const uploadUrl = isClientMode ? `/api/applications/${applicationId}/documents` : '/api/documents';
+
+        return axios.post(uploadUrl, uploadData, {
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
@@ -166,7 +178,8 @@ const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
       setIsSubmitting(true);
       setError('');
       const token = localStorage.getItem('token');
-      const response = await axios.post('/api/applications', formData, {
+      const endpoint = isClientMode ? '/api/applications/client-create' : '/api/applications';
+      const response = await axios.post(endpoint, formData, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const applicationId = response.data.application_id || response.data.applicationId;
@@ -179,7 +192,7 @@ const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
       await onSuccess?.();
       resetModal();
       onClose();
-      window.alert('Application submitted successfully.');
+      window.alert(isClientMode ? 'Application submitted for review.' : 'Application submitted successfully.');
     } catch (err) {
       console.error('Failed to submit application:', err);
       setError(getApiErrorMessage(err));
@@ -225,7 +238,7 @@ const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
               <div className="flex flex-wrap items-center gap-3">
                 <h2 className="text-xl font-black text-slate-950">Start New Application</h2>
                 <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-blue-700">
-                  Counselor
+                  {isClientMode ? 'Student' : 'Counselor'}
                 </span>
               </div>
               <p className="mt-1 text-sm font-medium text-slate-500">Fill in all required data</p>
@@ -294,8 +307,25 @@ const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
                 {renderTextInput({ label: 'Study Program', name: 'study_program' })}
                 {renderTextInput({ label: 'Qualification', name: 'qualification' })}
                 {renderTextInput({ label: 'Study Location', name: 'study_location' })}
+                {isClientMode && (
+                  <div>
+                    <label className={labelClass} htmlFor="visa_type">Visa Type</label>
+                    <select
+                      id="visa_type"
+                      name="visa_type"
+                      value={formData.visa_type}
+                      onChange={handleChange}
+                      className={inputClass}
+                      required
+                    >
+                      <option value="Student Visa">Student Visa</option>
+                      <option value="Visit Visa">Visit Visa</option>
+                      <option value="Dependent Visa">Dependent Visa</option>
+                    </select>
+                  </div>
+                )}
                 {renderTextInput({ label: 'Duration (Months)', name: 'duration_months', type: 'number' })}
-                {!isCounselorCreator && (
+                {!isClientMode && !isCounselorCreator && (
                   <div>
                     <label className={labelClass} htmlFor="counselor_id">Assign to Counselor</label>
                     <select
@@ -313,7 +343,7 @@ const CreateApplicationModal = ({ isOpen, onClose, onSuccess }) => {
                     </select>
                   </div>
                 )}
-                {isCounselorCreator && (
+                {!isClientMode && isCounselorCreator && (
                   <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3">
                     <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-600">Assigned Counselor</p>
                     <p className="mt-1 text-sm font-black text-emerald-900">{currentUser.full_name || 'You'}</p>

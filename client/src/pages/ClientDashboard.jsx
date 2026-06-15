@@ -19,7 +19,9 @@ import {
   X
 } from 'lucide-react';
 import ClientDocumentsGrid from '../components/ClientDocumentsGrid';
+import CreateApplicationModal from '../components/CreateApplicationModal';
 import PaymentGatewayModal from '../components/PaymentGatewayModal';
+import { connectUserSocket, socket } from '../utils/socket';
 
 const trackerStages = [
   'Under Review',
@@ -56,6 +58,21 @@ const getDatetimeLocalMin = () => {
   return date.toISOString().slice(0, 16);
 };
 
+const getMeetingStartTime = (meeting) => (
+  meeting?.status === 'PROPOSED' && meeting?.proposed_time
+    ? new Date(meeting.proposed_time).getTime()
+    : new Date(meeting?.requested_time).getTime()
+);
+
+const isMeetingStillActive = (meeting, now) => {
+  const startTime = getMeetingStartTime(meeting);
+  if (!Number.isFinite(startTime) || !Number.isFinite(now)) return false;
+
+  const durationMinutes = Number(meeting?.duration || 30);
+  const durationMs = (Number.isFinite(durationMinutes) && durationMinutes > 0 ? durationMinutes : 30) * 60 * 1000;
+  return startTime + durationMs > now;
+};
+
 const getStage = (client) => {
   if (!client?.application_id) return 'No Application';
   if (client.app_status === 'VISA_COMPLETED') return 'Visa Completed';
@@ -82,6 +99,32 @@ const KpiCard = ({ label, value, icon, accent }) => {
   </article>
   );
 };
+
+const EmptyApplicationState = ({ onStart }) => (
+  <div className="flex min-h-[calc(100vh-8rem)] items-center justify-center px-4 py-12">
+    <section className="w-full max-w-xl text-center">
+      <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-full bg-blue-50 text-blue-600">
+        <svg className="h-16 w-16" viewBox="0 0 96 96" fill="none" aria-hidden="true">
+          <path d="M18 28C18 23.5817 21.5817 20 26 20H40L48 28H70C74.4183 28 78 31.5817 78 36V68C78 72.4183 74.4183 76 70 76H26C21.5817 76 18 72.4183 18 68V28Z" fill="currentColor" opacity="0.12" />
+          <path d="M18 35H78V68C78 72.4183 74.4183 76 70 76H26C21.5817 76 18 72.4183 18 68V35Z" stroke="currentColor" strokeWidth="5" strokeLinejoin="round" />
+          <path d="M18 35V28C18 23.5817 21.5817 20 26 20H40L48 28H70C74.4183 28 78 31.5817 78 36V38" stroke="currentColor" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M37 55H59M37 64H52" stroke="currentColor" strokeWidth="5" strokeLinecap="round" />
+        </svg>
+      </div>
+      <h2 className="mt-7 text-3xl font-black tracking-tight text-slate-950">No Application Found</h2>
+      <p className="mx-auto mt-3 max-w-md text-sm font-semibold leading-6 text-slate-500">
+        You haven't started your university admission and visa journey yet.
+      </p>
+      <button
+        type="button"
+        onClick={onStart}
+        className="mt-7 inline-flex h-12 items-center justify-center rounded-xl bg-blue-600 px-6 text-sm font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-700"
+      >
+        Start New Application
+      </button>
+    </section>
+  </div>
+);
 
 const ClientDashboard = () => {
   const [clientProfile, setClientProfile] = useState(null);
@@ -111,7 +154,8 @@ const ClientDashboard = () => {
   const [missingDocsUploadProgress, setMissingDocsUploadProgress] = useState(0);
   const [showOfferConfetti, setShowOfferConfetti] = useState(false);
   const [showFlightAnimation, setShowFlightAnimation] = useState(false);
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const user = useMemo(() => JSON.parse(localStorage.getItem('user') || '{}'), []);
   const navigate = useNavigate();
 
   const fetchClientProfile = useCallback(async () => {
@@ -186,6 +230,35 @@ const ClientDashboard = () => {
   }, [fetchClientDocuments, fetchClientProfile, fetchMeetings, fetchPendingInvoice]);
 
   useEffect(() => {
+    if (!user?.id) return undefined;
+
+    connectUserSocket(user);
+
+    const handleVisaProgressUpdated = (payload) => {
+      const payloadApplicationId = Number(payload?.application_id);
+      const payloadClientId = Number(payload?.client_id);
+
+      if (
+        payloadApplicationId !== Number(clientProfile?.application_id) &&
+        payloadClientId !== Number(user.id)
+      ) {
+        return;
+      }
+
+      setClientProfile(prev => ({
+        ...prev,
+        visa_progress: Number(payload?.visa_progress ?? prev?.visa_progress ?? 0),
+        app_status: payload?.status || prev?.app_status
+      }));
+    };
+
+    socket.on('visa_progress_updated', handleVisaProgressUpdated);
+    return () => {
+      socket.off('visa_progress_updated', handleVisaProgressUpdated);
+    };
+  }, [clientProfile?.application_id, user]);
+
+  useEffect(() => {
     const startTimer = window.setTimeout(() => setMeetingCountdownTick(Date.now()), 0);
     const interval = window.setInterval(() => setMeetingCountdownTick(Date.now()), 1000);
     return () => {
@@ -219,9 +292,7 @@ const ClientDashboard = () => {
   useEffect(() => {
     if (!clientProfile?.application_id) return;
     const isSafeFlightStatus = ['VISA_COMPLETED', 'FLIGHT_BOOKED', 'ARRIVED'].includes(clientProfile?.app_status);
-    const storageKey = `hasSeenSafeFlight_${clientProfile.application_id}`;
-    if (isSafeFlightStatus && !localStorage.getItem(storageKey)) {
-      localStorage.setItem(storageKey, 'true');
+    if (isSafeFlightStatus) {
       const startTimer = window.setTimeout(() => setShowFlightAnimation(true), 0);
       const stopTimer = window.setTimeout(() => setShowFlightAnimation(false), 4000);
       return () => {
@@ -235,6 +306,8 @@ const ClientDashboard = () => {
   const currentStage = getStage(clientProfile);
   const currentStageIndex = trackerStages.indexOf(currentStage);
   const isFinalStage = currentStage === 'Visa Completed';
+  const visaProgress = Math.min(100, Math.max(0, Number(clientProfile?.visa_progress || 0)));
+  const shouldShowVisaProgress = ['VISA_PROCESSING', 'VISA_COMPLETED'].includes(clientProfile?.app_status);
   const hasApplication = Boolean(clientProfile?.application_id);
   const pendingInvoices = Number(clientProfile?.pending_invoices_count || 0);
   const uploadedDocuments = Number(clientProfile?.uploaded_documents_count || 0);
@@ -254,7 +327,11 @@ const ClientDashboard = () => {
     (Number(clientProfile?.visa_progress || 0) >= 100 && clientProfile?.app_status === 'FLIGHT_BOOKED') ||
     clientProfile?.app_status === 'ARRIVED'
   );
-  const upcomingMeetings = meetings.filter(meeting => ['PENDING', 'PROPOSED', 'STUDENT_ACCEPTED', 'APPROVED'].includes(meeting?.status));
+  const upcomingMeetings = meetings.filter(meeting => (
+    meetingCountdownTick > 0 &&
+    ['PENDING', 'PROPOSED', 'STUDENT_ACCEPTED', 'APPROVED'].includes(meeting?.status) &&
+    isMeetingStillActive(meeting, meetingCountdownTick)
+  ));
   const meetingStatusStyles = {
     PENDING: 'bg-amber-50 text-amber-700',
     PROPOSED: 'bg-indigo-50 text-indigo-700',
@@ -419,6 +496,30 @@ const ClientDashboard = () => {
           {[1, 2, 3, 4].map(item => <Skeleton key={item} height={130} borderRadius={18} />)}
         </div>
         <Skeleton height={260} borderRadius={18} />
+      </div>
+    );
+  }
+
+  if (!hasApplication) {
+    return (
+      <div className="bg-slate-50" dir="ltr">
+        {error && (
+          <div className="mx-auto mt-6 max-w-xl rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+            {error}
+          </div>
+        )}
+        <EmptyApplicationState onStart={() => setIsWizardOpen(true)} />
+        <CreateApplicationModal
+          isOpen={isWizardOpen}
+          mode="client"
+          onClose={() => setIsWizardOpen(false)}
+          onSuccess={async () => {
+            await Promise.all([
+              fetchClientProfile(),
+              fetchClientDocuments()
+            ]);
+          }}
+        />
       </div>
     );
   }
@@ -632,14 +733,6 @@ const ClientDashboard = () => {
           </span>
         </div>
 
-        {!hasApplication ? (
-          <div className="rounded-2xl border border-amber-100 bg-amber-50 p-5">
-            <h4 className="font-black text-amber-950">No application found</h4>
-            <p className="mt-2 text-sm font-bold leading-6 text-amber-800">
-              Contact customer service to create an application, then you will be able to track it here.
-            </p>
-          </div>
-        ) : (
         <div className="overflow-x-auto pb-2">
           <div className="flex min-w-[760px] items-center">
             {trackerStages.map((stage, index) => {
@@ -671,9 +764,45 @@ const ClientDashboard = () => {
             })}
           </div>
         </div>
+
+        {shouldShowVisaProgress && (
+          <div className={`mt-8 rounded-2xl border p-5 ${
+            clientProfile?.app_status === 'VISA_COMPLETED'
+              ? 'border-emerald-100 bg-emerald-50'
+              : 'border-blue-100 bg-blue-50'
+          }`}>
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className={`text-sm font-black ${
+                  clientProfile?.app_status === 'VISA_COMPLETED' ? 'text-emerald-900' : 'text-blue-950'
+                }`}>
+                  {clientProfile?.app_status === 'VISA_COMPLETED'
+                    ? 'Visa Processing Complete: 100%'
+                    : `Visa Processing Progress: ${visaProgress}%`}
+                </p>
+                <p className={`mt-1 text-xs font-bold ${
+                  clientProfile?.app_status === 'VISA_COMPLETED' ? 'text-emerald-700' : 'text-blue-700'
+                }`}>
+                  Your counselor updates this progress as your visa moves forward.
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-black ${
+                clientProfile?.app_status === 'VISA_COMPLETED'
+                  ? 'bg-white text-emerald-700'
+                  : 'bg-white text-blue-700'
+              }`}>
+                {clientProfile?.app_status === 'VISA_COMPLETED' ? 100 : visaProgress}%
+              </span>
+            </div>
+            <div className={`${clientProfile?.app_status === 'VISA_COMPLETED' ? 'bg-emerald-100' : 'bg-blue-100'} h-3 overflow-hidden rounded-full`}>
+              <div
+                className={`${clientProfile?.app_status === 'VISA_COMPLETED' ? 'bg-emerald-600' : 'bg-blue-600'} h-full rounded-full transition-all duration-700 ease-out`}
+                style={{ width: `${clientProfile?.app_status === 'VISA_COMPLETED' ? 100 : visaProgress}%` }}
+              />
+            </div>
+          </div>
         )}
 
-        {hasApplication && (
         <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
             <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Target University</p>
@@ -688,10 +817,9 @@ const ClientDashboard = () => {
             <p className="mt-2 font-black text-slate-900">{clientProfile?.study_location || clientProfile?.country_of_residence || 'Malaysia'}</p>
           </div>
         </div>
-        )}
       </section>
 
-      {canDownloadOffer && (
+      {hasApplication && canDownloadOffer && (
         <section className="rounded-2xl border border-emerald-100 bg-emerald-50 p-6 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
@@ -714,7 +842,7 @@ const ClientDashboard = () => {
         </section>
       )}
 
-      {canDownloadVisaDocument && (
+      {hasApplication && canDownloadVisaDocument && (
         <section className="rounded-2xl border border-blue-100 bg-blue-50 p-6 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
@@ -737,10 +865,13 @@ const ClientDashboard = () => {
         </section>
       )}
 
-      <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-        <ClientDocumentsGrid documents={applicationDocuments} isLoading={isDocumentsLoading} />
-      </section>
+      {hasApplication && (
+        <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+          <ClientDocumentsGrid documents={applicationDocuments} isLoading={isDocumentsLoading} />
+        </section>
+      )}
 
+      {hasApplication && (
       <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
         <h3 className="text-xl font-black text-slate-950">Required Actions</h3>
         <div className="mt-5 space-y-3">
@@ -794,11 +925,6 @@ const ClientDashboard = () => {
               </button>
             </div>
           )}
-          {!hasApplication && (
-            <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-sm font-bold text-amber-800">
-              No application found. Please contact customer service to create an application.
-            </div>
-          )}
           {hasApplication && pendingInvoices === 0 && missingDocuments === 0 && (
             <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm font-bold text-emerald-800">
               You are all caught up! Waiting for staff review.
@@ -806,6 +932,7 @@ const ClientDashboard = () => {
           )}
         </div>
       </section>
+      )}
       <PaymentGatewayModal
         invoice={pendingInvoice}
         isOpen={isPaymentModalOpen}

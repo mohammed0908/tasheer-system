@@ -1,9 +1,12 @@
 import nodemailer from 'nodemailer';
 
 const sendEmail = async (to, subject, text, html) => {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_USER, EMAIL_PASS } = process.env;
+  const { SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS, EMAIL_USER, EMAIL_PASS } = process.env;
   const user = SMTP_USER || EMAIL_USER;
   const pass = SMTP_PASS || EMAIL_PASS;
+  const host = SMTP_HOST || 'smtp.gmail.com';
+  const port = Number(SMTP_PORT || 587);
+  const secure = SMTP_SECURE ? SMTP_SECURE === 'true' : port === 465;
 
   if (!user || !pass) {
     console.warn(`Email not sent to ${to}: email environment variables are not fully configured.`);
@@ -12,23 +15,18 @@ const sendEmail = async (to, subject, text, html) => {
     return { skipped: true };
   }
 
-  const transporter = SMTP_HOST && SMTP_PORT
-    ? nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      secure: Number(SMTP_PORT) === 465,
-      auth: {
-        user,
-        pass
-      }
-    })
-    : nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user,
-        pass
-      }
-    });
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: {
+      user,
+      pass
+    },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 15000
+  });
 
   return transporter.sendMail({
     from: `"TSMS Security" <${user}>`,

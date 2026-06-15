@@ -78,6 +78,7 @@ const io = new Server(httpServer, {
 });
 
 const onlineUsers = new Map();
+app.set('onlineUsers', onlineUsers);
 
 io.on('connection', (socket) => {
   socket.on('user_online', (user) => {

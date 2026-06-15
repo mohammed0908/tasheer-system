@@ -76,16 +76,16 @@ const normalizeDepartment = (user) => (
 
 const applicationActionConfig = {
   'Customer Service': {
-    statuses: ['LEAD'],
-    ownerColumn: 'a.created_by_cs_id',
+    statuses: ['PENDING_CS_REVIEW'],
+    ownerColumn: null,
     title: (app) => `Verify lead intake for ${app.app_uid}`,
     subtitle: (app) => `Student: ${app.student_name || 'Unknown Student'}`
   },
   Counselor: {
-    statuses: ['LEAD', 'DOCS_VERIFICATION', 'OFFER_UPLOADED', 'OFFER_APPROVED', 'VISA_PROCESSING'],
+    statuses: ['LEAD', 'COUNSELOR_ASSIGNED', 'DOCS_VERIFICATION', 'OFFER_UPLOADED', 'OFFER_APPROVED', 'VISA_PROCESSING'],
     ownerColumn: 'a.counselor_id',
     title: (app) => {
-      if (app.status === 'LEAD' || app.status === 'DOCS_VERIFICATION') return `Review Docs for ${app.app_uid}`;
+      if (app.status === 'LEAD' || app.status === 'COUNSELOR_ASSIGNED' || app.status === 'DOCS_VERIFICATION') return `Review Docs for ${app.app_uid}`;
       if (app.status === 'OFFER_UPLOADED') return `Verify Offer Letter for ${app.app_uid}`;
       if (app.status === 'OFFER_APPROVED') return `Request Invoice for ${app.app_uid}`;
       return `Update Visa Progress for ${app.app_uid}`;

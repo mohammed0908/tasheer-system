@@ -26,7 +26,7 @@ const getApplicationStatusLabel = (status) => {
   if (status === 'PENDING_DOCS') return 'Pending Documents';
   if (status === 'APPLIED_FOR_OL') return 'Applied for OL';
   if (status === 'WAITING_FOR_OL') return 'Waiting for OL';
-  if (['LEAD', 'DOCS_VERIFICATION'].includes(status)) return 'Under Review';
+  if (['LEAD', 'PENDING_CS_REVIEW', 'COUNSELOR_ASSIGNED', 'DOCS_VERIFICATION'].includes(status)) return 'Under Review';
   if (status === 'PENDING_OFFER_APPLY') return 'Pending Operations';
   if (status === 'OFFER_PROCESSING') return 'Waiting for OL';
   if (['OFFER_UPLOADED', 'OFFER_APPROVED'].includes(status)) return 'Admission Issued';

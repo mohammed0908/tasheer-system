@@ -5,6 +5,8 @@ import { ensureNotificationsTable } from './taskController.js';
 const PORTAL_PAYMENT_URL = process.env.CLIENT_PAYMENT_URL || 'https://yourdomain.com/client/payments';
 const PAYMENT_APPLICATION_STATUSES = [
   'LEAD',
+  'PENDING_CS_REVIEW',
+  'COUNSELOR_ASSIGNED',
   'PENDING_DOCS',
   'DOCS_VERIFICATION',
   'APPLIED_FOR_OL',

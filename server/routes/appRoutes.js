@@ -2,12 +2,14 @@ import express from 'express';
 import { protect, authorize } from '../middleware/authMiddleware.js';
 import {
   createApplication,
+  createClientApplication,
   getStudentApplication,
   getAllApplications,
   updateApplicationStage,
   updateVisaProgress,
   advanceApplicationState,
   assignApplication,
+  assignCounselorToApplication,
   getDashboardKPIs,
   getAssignedApplications,
   createNewApplication,
@@ -35,6 +37,7 @@ router.put('/:id/advance-state', protect, authorize('staff', 'admin', 'client'),
   { name: 'accommodation_images', maxCount: 10 }
 ]), advanceApplicationState);
 router.put('/:id/visa-progress', protect, authorize('staff', 'admin'), updateVisaProgress);
+router.put('/:id/assign-counselor', protect, authorize('staff', 'admin'), assignCounselorToApplication);
 router.post('/:id/missing-documents', protect, authorize('staff', 'admin'), requestMissingDocuments);
 router.put('/:id/upload-missing-docs', protect, authorize('client'), upload.array('missing_docs', 10), uploadMissingDocuments);
 router.put('/:id/stage', protect, authorize('admin', 'staff'), updateApplicationStage);
@@ -52,6 +55,7 @@ router.post('/new', protect, authorize('admin', 'staff'), upload.fields([
 ]), createNewApplication);
 
 // Routes for Client, Staff, and Admin
+router.post('/client-create', protect, authorize('client'), createClientApplication);
 router.post('/', protect, authorize('client', 'admin', 'staff'), createApplication);
 router.get('/my-application', protect, authorize('client'), getStudentApplication);
 

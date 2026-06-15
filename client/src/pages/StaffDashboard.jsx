@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import toast from 'react-hot-toast';
-import { Activity, ArrowRight, CalendarDays, CheckCircle2, Clock3, CreditCard, FileCheck2, FileText, FileUp, Flag, MessageCircle, PieChart as PieChartIcon, RefreshCw, Send, Target, TrendingUp, UserPlus, Video, WalletCards, X } from 'lucide-react';
+import { Activity, ArrowRight, CalendarDays, CheckCircle2, Clock3, CreditCard, FileCheck2, FileText, FileUp, Flag, MessageCircle, PieChart as PieChartIcon, RefreshCw, Send, Target, TrendingUp, UserCheck, Video, WalletCards, X } from 'lucide-react';
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 
 const formatCurrentDate = () => {
@@ -93,6 +93,8 @@ const normalizeDepartment = (user) => (
 );
 
 const statusBadgeStyles = {
+  PENDING_CS_REVIEW: 'bg-amber-50 text-amber-700 border-amber-100',
+  COUNSELOR_ASSIGNED: 'bg-indigo-50 text-indigo-700 border-indigo-100',
   PENDING_DOCS: 'bg-rose-50 text-rose-700 border-rose-100',
   DOCS_VERIFICATION: 'bg-blue-50 text-blue-700 border-blue-100',
   APPLIED_FOR_OL: 'bg-indigo-50 text-indigo-700 border-indigo-100',
@@ -131,6 +133,21 @@ const getMeetingCountdownText = (requestedTime) => {
   return `Starts in: ${pad(days)}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
 };
 
+const getMeetingStartTime = (meeting) => (
+  meeting?.status === 'PROPOSED' && meeting?.proposed_time
+    ? new Date(meeting.proposed_time).getTime()
+    : new Date(meeting?.requested_time).getTime()
+);
+
+const isMeetingStillActive = (meeting, now) => {
+  const startTime = getMeetingStartTime(meeting);
+  if (!Number.isFinite(startTime) || !Number.isFinite(now)) return false;
+
+  const durationMinutes = Number(meeting?.duration || 30);
+  const durationMs = (Number.isFinite(durationMinutes) && durationMinutes > 0 ? durationMinutes : 30) * 60 * 1000;
+  return startTime + durationMs > now;
+};
+
 const MeetingCountdown = ({ requestedTime }) => {
   const [timeLeft, setTimeLeft] = useState('');
 
@@ -151,6 +168,93 @@ const MeetingCountdown = ({ requestedTime }) => {
     <span className={`inline-flex rounded-xl px-3 py-2 text-xs font-black ${isStarting ? 'bg-emerald-600 text-white' : 'bg-orange-50 text-orange-700'}`}>
       {timeLeft || 'Starts in: --d --h --m --s'}
     </span>
+  );
+};
+
+const VisaProgressModal = ({
+  application,
+  progressValue,
+  isSaving,
+  error,
+  onChange,
+  onClose,
+  onSave
+}) => {
+  if (!application) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-black text-slate-950">Update Visa Progress</h2>
+            <p className="mt-1 text-sm font-semibold text-slate-500">
+              {application.student_name || 'Student'} / {application.app_uid || `Application #${application.id}`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSaving}
+            className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div className="rounded-2xl border border-slate-100 bg-slate-50 p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <span className="text-sm font-black text-slate-700">Visa Progress</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-black text-blue-700">{progressValue}%</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={progressValue}
+            onChange={event => onChange(Number(event.target.value))}
+            className="h-2 w-full cursor-pointer accent-blue-600"
+          />
+          <div className="mt-3 flex justify-between text-xs font-bold text-slate-400">
+            <span>0%</span>
+            <span>50%</span>
+            <span>100%</span>
+          </div>
+        </div>
+
+        {progressValue === 100 && (
+          <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+            Saving 100% will finalize the Visa stage.
+          </div>
+        )}
+
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSaving}
+            className="rounded-xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-sm font-black text-slate-600 transition hover:bg-slate-200 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={isSaving}
+            className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-black text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-60"
+          >
+            {isSaving ? 'Saving...' : 'Save Progress'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -231,6 +335,7 @@ const StaffDashboard = () => {
   const navigate = useNavigate();
   const [activeTasks, setActiveTasks] = useState([]);
   const [meetings, setMeetings] = useState([]);
+  const [meetingNowTick, setMeetingNowTick] = useState(0);
   const [approvalMeeting, setApprovalMeeting] = useState(null);
   const [proposalMeeting, setProposalMeeting] = useState(null);
   const [meetingLink, setMeetingLink] = useState('');
@@ -246,14 +351,11 @@ const StaffDashboard = () => {
   const [actionError, setActionError] = useState('');
   const [offerFiles, setOfferFiles] = useState({});
   const [visaFiles, setVisaFiles] = useState({});
-  const [visaInputs, setVisaInputs] = useState({});
-  const [csForm, setCsForm] = useState({
-    full_name: '',
-    email: '',
-    university_name: '',
-    study_program: '',
-    counselor_id: ''
-  });
+  const [visaProgressApplication, setVisaProgressApplication] = useState(null);
+  const [progressValue, setProgressValue] = useState(0);
+  const [visaProgressError, setVisaProgressError] = useState('');
+  const [assignmentApplication, setAssignmentApplication] = useState(null);
+  const [selectedCounselorId, setSelectedCounselorId] = useState('');
   const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('user') || '{}'));
   const userDepartment = normalizeDepartment(user);
   const userRoleLabel = user.job_title || user.department || user.role || 'Staff';
@@ -429,6 +531,15 @@ const StaffDashboard = () => {
     return () => window.clearTimeout(timer);
   }, [fetchMeetings]);
 
+  useEffect(() => {
+    const startTimer = window.setTimeout(() => setMeetingNowTick(Date.now()), 0);
+    const interval = window.setInterval(() => setMeetingNowTick(Date.now()), 30000);
+    return () => {
+      window.clearTimeout(startTimer);
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const handleAdvanceState = async (applicationId, newStatus, extraData = {}) => {
     try {
       setActionLoading(`${applicationId}-${newStatus}`);
@@ -446,23 +557,30 @@ const StaffDashboard = () => {
     }
   };
 
-  const handleCreateCsApplication = async (event) => {
+  const handleAssignCounselor = async (event) => {
     event.preventDefault();
+    if (!assignmentApplication || !selectedCounselorId) return;
+
     try {
-      setActionLoading('create-cs-application');
+      const applicationId = getAppId(assignmentApplication);
+      setActionLoading(`assign-counselor-${applicationId}`);
       setActionError('');
-      const res = await axios.post('/api/applications', csForm, { headers: authHeaders() });
-      const applicationId = res.data.application_id || res.data.applicationId;
-      if (applicationId) {
-        await axios.put(`/api/applications/${applicationId}/advance-state`, {
-          new_status: 'DOCS_VERIFICATION'
-        }, { headers: authHeaders() });
-      }
-      setCsForm({ full_name: '', email: '', university_name: '', study_program: '', counselor_id: '' });
-      await fetchLifecycleData({ showLoading: false });
+      await axios.put(`/api/applications/${applicationId}/assign-counselor`, {
+        counselor_id: selectedCounselorId
+      }, { headers: authHeaders() });
+      setApplications(prev => prev.filter(app => Number(getAppId(app)) !== Number(applicationId)));
+      setAssignmentApplication(null);
+      setSelectedCounselorId('');
+      await Promise.all([
+        fetchActiveTasks({ showLoading: false }),
+        fetchStaffMetrics()
+      ]);
+      toast.success('Counselor assigned successfully.');
     } catch (error) {
-      console.error('Failed to create CS application:', error);
-      setActionError(getApiErrorMessage(error));
+      console.error('Failed to assign counselor:', error);
+      const message = getApiErrorMessage(error, 'Failed to assign counselor.');
+      setActionError(message);
+      toast.error(message);
     } finally {
       setActionLoading('');
     }
@@ -518,15 +636,66 @@ const StaffDashboard = () => {
     }
   };
 
-  const handleVisaProgressUpdate = async (applicationId) => {
+  const openVisaProgressModal = (application) => {
+    setVisaProgressApplication(application);
+    setProgressValue(Number(application?.visa_progress || 0));
+    setVisaProgressError('');
+  };
+
+  const closeVisaProgressModal = ({ force = false } = {}) => {
+    if (!force && actionLoading === 'visa-progress') return;
+    setVisaProgressApplication(null);
+    setProgressValue(0);
+    setVisaProgressError('');
+  };
+
+  const handleVisaProgressUpdate = async () => {
+    if (!visaProgressApplication) return;
+
+    if (progressValue === 100) {
+      const confirmed = window.confirm('Setting progress to 100% will finalize the Visa stage. Are you sure?');
+      if (!confirmed) return;
+    }
+
     try {
-      setActionLoading(`${applicationId}-visa-progress`);
-      await axios.put(`/api/applications/${applicationId}/visa-progress`, {
-        visa_progress: Number(visaInputs[applicationId] || 0)
+      setActionLoading('visa-progress');
+      setVisaProgressError('');
+      const applicationId = getAppId(visaProgressApplication);
+      const res = await axios.put(`/api/applications/${applicationId}/visa-progress`, {
+        progress: Number(progressValue)
       }, { headers: authHeaders() });
-      await fetchLifecycleData({ showLoading: false });
+
+      const updatedApplication = res.data?.application;
+      if (updatedApplication) {
+        setApplications(prev => prev.map(app => (
+          Number(getAppId(app)) === Number(applicationId)
+            ? {
+              ...app,
+              ...updatedApplication,
+              app_id: updatedApplication.app_id || updatedApplication.id || app.app_id
+            }
+            : app
+        )));
+      } else {
+        setApplications(prev => prev.map(app => (
+          Number(getAppId(app)) === Number(applicationId)
+            ? {
+              ...app,
+              visa_progress: Number(progressValue),
+              status: Number(progressValue) === 100 ? 'VISA_COMPLETED' : app.status
+            }
+            : app
+        )));
+      }
+
+      closeVisaProgressModal({ force: true });
+      await Promise.all([
+        fetchActiveTasks({ showLoading: false }),
+        fetchStaffMetrics()
+      ]);
     } catch (error) {
       console.error('Failed to update visa progress:', error);
+      setVisaProgressError(error.response?.data?.message || 'Failed to update visa progress.');
     } finally {
       setActionLoading('');
     }
@@ -615,7 +784,11 @@ const StaffDashboard = () => {
   const counselors = (staffMembers || []).filter(member => normalizeDepartment(member) === 'Counselor');
   const visibleApplications = (applications || []).filter(app => {
     if (userDepartment === 'Customer Service') {
-      return Number(app?.created_by_cs_id) === Number(user?.id);
+      return (
+        Number(app?.created_by_cs_id) === Number(user?.id) ||
+        !app?.counselor_id ||
+        app?.status === 'PENDING_CS_REVIEW'
+      );
     }
     if (userDepartment === 'Counselor') {
       return (
@@ -626,10 +799,19 @@ const StaffDashboard = () => {
     }
     return true;
   });
-  const counselorApplications = visibleApplications.filter(app => ['LEAD', 'DOCS_VERIFICATION', 'OFFER_UPLOADED', 'OFFER_APPROVED', 'VISA_PROCESSING'].includes(app?.status));
+  const csReviewQueue = visibleApplications.filter(app => !app?.counselor_id || app?.status === 'PENDING_CS_REVIEW');
+  const counselorApplications = visibleApplications.filter(app => ['LEAD', 'COUNSELOR_ASSIGNED', 'DOCS_VERIFICATION', 'OFFER_UPLOADED', 'OFFER_APPROVED', 'VISA_PROCESSING'].includes(app?.status));
   const operationsApplications = visibleApplications.filter(app => ['PENDING_OFFER_APPLY', 'OFFER_PROCESSING', 'PAYMENT_VERIFIED'].includes(app?.status));
-  const pendingMeetings = meetings.filter(meeting => ['PENDING', 'PROPOSED', 'STUDENT_ACCEPTED'].includes(meeting?.status));
-  const approvedMeetings = meetings.filter(meeting => meeting?.status === 'APPROVED');
+  const pendingMeetings = meetings.filter(meeting => (
+    meetingNowTick > 0 &&
+    ['PENDING', 'PROPOSED', 'STUDENT_ACCEPTED'].includes(meeting?.status) &&
+    isMeetingStillActive(meeting, meetingNowTick)
+  ));
+  const approvedMeetings = meetings.filter(meeting => (
+    meetingNowTick > 0 &&
+    meeting?.status === 'APPROVED' &&
+    isMeetingStillActive(meeting, meetingNowTick)
+  ));
   const getAppId = (app) => app?.app_id || app?.id;
   const statusDistributionData = Object.entries(staffMetrics.status_distribution || {}).map(([status, count]) => ({
     name: status.replace(/_/g, ' '),
@@ -773,56 +955,58 @@ const StaffDashboard = () => {
           )}
 
           {userDepartment === 'Customer Service' && (
-            <form onSubmit={handleCreateCsApplication} className="grid grid-cols-1 gap-4 lg:grid-cols-6">
-              <input
-                value={csForm.full_name}
-                onChange={event => setCsForm(prev => ({ ...prev, full_name: event.target.value }))}
-                placeholder="Client full name"
-                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 lg:col-span-2"
-                required
-              />
-              <input
-                type="email"
-                value={csForm.email}
-                onChange={event => setCsForm(prev => ({ ...prev, email: event.target.value }))}
-                placeholder="Client email"
-                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 lg:col-span-2"
-                required
-              />
-              <select
-                value={csForm.counselor_id}
-                onChange={event => setCsForm(prev => ({ ...prev, counselor_id: event.target.value }))}
-                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 lg:col-span-2"
-                required
-              >
-                <option value="">Assign counselor</option>
-                {counselors.map(counselor => (
-                  <option key={counselor.id} value={counselor.id}>{counselor.full_name}</option>
-                ))}
-              </select>
-              <input
-                value={csForm.university_name}
-                onChange={event => setCsForm(prev => ({ ...prev, university_name: event.target.value }))}
-                placeholder="Target university"
-                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 lg:col-span-2"
-                required
-              />
-              <input
-                value={csForm.study_program}
-                onChange={event => setCsForm(prev => ({ ...prev, study_program: event.target.value }))}
-                placeholder="Study program"
-                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 lg:col-span-2"
-                required
-              />
-              <button
-                type="submit"
-                disabled={actionLoading === 'create-cs-application'}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-black text-white shadow-sm hover:bg-blue-700 disabled:opacity-60 lg:col-span-2"
-              >
-                <UserPlus size={16} />
-                {actionLoading === 'create-cs-application' ? 'Creating...' : 'Create & Verify Docs'}
-              </button>
-            </form>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="p-3">Client</th>
+                    <th className="p-3">Application</th>
+                    <th className="p-3">Status</th>
+                    <th className="p-3">Submitted</th>
+                    <th className="p-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {isLifecycleLoading ? (
+                    <tr><td colSpan="5" className="p-6 text-center text-slate-500">Loading review queue...</td></tr>
+                  ) : csReviewQueue.length === 0 ? (
+                    <tr><td colSpan="5" className="p-6 text-center text-slate-500">No applications waiting for review.</td></tr>
+                  ) : csReviewQueue.map(app => (
+                    <tr key={getAppId(app)}>
+                      <td className="p-3">
+                        <p className="font-black text-slate-800">{app.student_name || 'Client'}</p>
+                        <p className="mt-1 text-xs font-bold text-slate-400">{app.student_email || 'No email'}</p>
+                      </td>
+                      <td className="p-3">
+                        <p className="font-bold text-slate-700">{app.university_name || 'Target university not set'}</p>
+                        <p className="mt-1 text-xs font-bold text-slate-400">{app.program_name || 'Program not set'} / {app.study_location || 'Country not set'}</p>
+                      </td>
+                      <td className="p-3">
+                        <span className={`rounded-full border px-3 py-1 text-xs font-black ${statusBadgeStyles[app.status] || 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                          {app.status || 'PENDING_CS_REVIEW'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-500">
+                        {app.created_at ? new Date(app.created_at).toLocaleDateString() : '-'}
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAssignmentApplication(app);
+                            setSelectedCounselorId('');
+                          }}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700"
+                        >
+                          <UserCheck size={15} />
+                          Assign Counselor
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           {userDepartment === 'Counselor' && (
@@ -975,7 +1159,7 @@ const StaffDashboard = () => {
                           </span>
                         </td>
                         <td className="p-3 text-right">
-                          {['LEAD', 'DOCS_VERIFICATION'].includes(app.status) && (
+                          {['LEAD', 'COUNSELOR_ASSIGNED', 'DOCS_VERIFICATION'].includes(app.status) && (
                             <button
                               type="button"
                               onClick={() => navigate(app.app_uid ? `/staff/clients?openApp=${encodeURIComponent(app.app_uid)}` : '/staff/clients')}
@@ -1009,16 +1193,14 @@ const StaffDashboard = () => {
                           )}
                           {app.status === 'VISA_PROCESSING' && (
                             <div className="inline-flex max-w-lg flex-wrap items-center justify-end gap-2">
-                              <input
-                                type="range"
-                                min="0"
-                                max="100"
-                                value={visaInputs[getAppId(app)] ?? app.visa_progress ?? 0}
-                                onChange={event => setVisaInputs(prev => ({ ...prev, [getAppId(app)]: event.target.value }))}
-                                className="w-28"
-                              />
-                              <span className="w-10 text-xs font-black text-slate-600">{visaInputs[getAppId(app)] ?? app.visa_progress ?? 0}%</span>
-                              <button type="button" onClick={() => handleVisaProgressUpdate(getAppId(app))} className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700">
+                              <span className="rounded-xl bg-cyan-50 px-3 py-2 text-xs font-black text-cyan-700">
+                                {Number(app.visa_progress || 0)}%
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => openVisaProgressModal(app)}
+                                className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white hover:bg-blue-700"
+                              >
                                 Update Progress
                               </button>
                               <button
@@ -1327,6 +1509,74 @@ const StaffDashboard = () => {
           </div>
         )}
       </section>
+      {assignmentApplication && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-950">Assign Counselor</h2>
+                <p className="mt-1 text-sm font-semibold text-slate-500">
+                  {assignmentApplication.student_name || 'Client'} / {assignmentApplication.app_uid || `Application #${getAppId(assignmentApplication)}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (actionLoading) return;
+                  setAssignmentApplication(null);
+                  setSelectedCounselorId('');
+                }}
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="mb-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">Application</p>
+              <p className="mt-1 text-sm font-black text-slate-900">{assignmentApplication.university_name || 'Target university not set'}</p>
+              <p className="mt-1 text-xs font-bold text-slate-500">{assignmentApplication.program_name || 'Program not set'} / {assignmentApplication.study_location || 'Country not set'}</p>
+            </div>
+            <form onSubmit={handleAssignCounselor} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">Counselor</label>
+                <select
+                  value={selectedCounselorId}
+                  onChange={event => setSelectedCounselorId(event.target.value)}
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:border-blue-300 focus:bg-white focus:ring-4 focus:ring-blue-50"
+                  required
+                >
+                  <option value="">Select counselor</option>
+                  {counselors.map(counselor => (
+                    <option key={counselor.id} value={counselor.id}>{counselor.full_name}</option>
+                  ))}
+                </select>
+              </div>
+              {counselors.length === 0 && (
+                <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+                  No counselors are available to assign.
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={!selectedCounselorId || actionLoading === `assign-counselor-${getAppId(assignmentApplication)}`}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 text-sm font-black text-white shadow-sm hover:bg-blue-700 disabled:opacity-60"
+              >
+                <UserCheck size={18} />
+                {actionLoading === `assign-counselor-${getAppId(assignmentApplication)}` ? 'Assigning...' : 'Assign Counselor'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+      <VisaProgressModal
+        application={visaProgressApplication}
+        progressValue={progressValue}
+        isSaving={actionLoading === 'visa-progress'}
+        error={visaProgressError}
+        onChange={setProgressValue}
+        onClose={closeVisaProgressModal}
+        onSave={handleVisaProgressUpdate}
+      />
       {approvalMeeting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">

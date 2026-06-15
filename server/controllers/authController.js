@@ -6,6 +6,7 @@ import sendEmail from '../utils/sendEmail.js';
 const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
 
 const generateCode = () => String(Math.floor(100000 + Math.random() * 900000));
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
 const ensureAuthColumns = async () => {
   let addedIsVerified = false;
@@ -110,11 +111,14 @@ const sendResetEmail = async (email, code) => {
 };
 
 export const registerUser = async (req, res) => {
+  const connection = await db.getConnection();
+
   try {
     await ensureAuthColumns();
 
-    const { name, full_name, email, password } = req.body;
+    const { name, full_name, email: rawEmail, password } = req.body;
     const fullName = name || full_name;
+    const email = normalizeEmail(rawEmail);
 
     if (!fullName || !email || !password) {
       return res.status(400).json({ message: 'Please provide name, email, and password' });
@@ -126,38 +130,62 @@ export const registerUser = async (req, res) => {
       });
     }
 
-    const [existingUsers] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
-    if (existingUsers.length > 0) {
+    const [existingUsers] = await db.query('SELECT id, role, is_verified FROM users WHERE LOWER(email) = ?', [email]);
+    const existingUser = existingUsers[0];
+
+    if (existingUser?.is_verified) {
       return res.status(400).json({ message: 'User exists, please try signing in instead' });
     }
 
+    if (existingUser && existingUser.role !== 'client') {
+      return res.status(400).json({ message: 'This email is already used by a staff or admin account' });
+    }
+
     await ensureClientApplicationLinkColumns();
+    await connection.beginTransaction();
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const otp = generateCode();
-    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-    const [result] = await db.query(
-      `INSERT INTO users (full_name, email, password, role, is_verified, otp, otp_expiry, verification_code)
-       VALUES (?, ?, ?, 'client', FALSE, ?, ?, ?)`,
-      [fullName, email, hashedPassword, otp, otpExpiry, otp]
-    );
-
-    const userId = result.insertId;
-    const [matchingApplications] = await db.query(
+    let userId = existingUser?.id;
+    if (userId) {
+      await connection.query(
+        `UPDATE users
+         SET full_name = ?, email = ?, password = ?, role = 'client', is_verified = FALSE, otp = ?, otp_expiry = DATE_ADD(NOW(), INTERVAL 10 MINUTE), verification_code = ?
+         WHERE id = ?`,
+        [fullName, email, hashedPassword, otp, otp, userId]
+      );
+    } else {
+      const [result] = await connection.query(
+        `INSERT INTO users (full_name, email, password, role, is_verified, otp, otp_expiry, verification_code)
+         VALUES (?, ?, ?, 'client', FALSE, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), ?)`,
+        [fullName, email, hashedPassword, otp, otp]
+      );
+      userId = result.insertId;
+    }
+    const [matchingApplications] = await connection.query(
       `SELECT applicant_passport_no, applicant_nationality, applicant_phone, applicant_country_of_residence, applicant_city,
               guardian_name, guardian_phone, guardian_email
        FROM applications
-       WHERE application_email = ? AND student_id IS NULL
+       WHERE LOWER(application_email) = ? AND student_id IS NULL
        ORDER BY created_at DESC
        LIMIT 1`,
       [email]
     );
     const applicationDetails = matchingApplications[0] || {};
 
-    await db.query(
+    await connection.query(
       `INSERT INTO students
         (user_id, passport_no, nationality, phone, country_of_residence, city, guardian_name, guardian_phone, guardian_email)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+        passport_no = VALUES(passport_no),
+        nationality = VALUES(nationality),
+        phone = VALUES(phone),
+        country_of_residence = VALUES(country_of_residence),
+        city = VALUES(city),
+        guardian_name = VALUES(guardian_name),
+        guardian_phone = VALUES(guardian_phone),
+        guardian_email = VALUES(guardian_email)`,
       [
         userId,
         applicationDetails.applicant_passport_no || null,
@@ -171,25 +199,48 @@ export const registerUser = async (req, res) => {
       ]
     );
 
-    await db.query(
+    await connection.query(
       `UPDATE applications
        SET student_id = ?, client_id = ?
-       WHERE application_email = ? AND student_id IS NULL`,
+       WHERE LOWER(application_email) = ? AND student_id IS NULL`,
       [userId, userId, email]
     );
 
-    await sendVerificationEmail(email, otp);
+    try {
+      const emailResult = await sendVerificationEmail(email, otp);
+      if (emailResult?.skipped) {
+        throw new Error('Email sending is not configured. Please set EMAIL_USER and EMAIL_PASS.');
+      }
+    } catch (emailError) {
+      console.error('Registration OTP email failed:', emailError);
+      throw new Error('Verification email could not be sent. Please check EMAIL_USER and EMAIL_PASS.');
+    }
 
-    res.status(201).json({
+    await connection.commit();
+
+    const response = {
       message: 'Account created. Please verify your email with the OTP we sent.',
       requiresOtp: true,
       requiresVerification: true,
       userId,
       email
-    });
+    };
+
+    res.status(201).json(response);
   } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (rollbackError) {
+      console.error('Registration rollback failed:', rollbackError);
+    }
     console.error('Error in registerUser:', error);
-    res.status(500).json({ message: 'Server error while registering user' });
+    const isEmailDeliveryError = String(error.message || '').includes('Verification email') ||
+      String(error.message || '').includes('Email sending');
+    res.status(isEmailDeliveryError ? 502 : 500).json({
+      message: isEmailDeliveryError ? error.message : 'Server error while registering user'
+    });
+  } finally {
+    connection.release();
   }
 };
 
@@ -197,7 +248,8 @@ export const verifyEmail = async (req, res) => {
   try {
     await ensureAuthColumns();
 
-    const { email, code, otp } = req.body;
+    const { email: rawEmail, code, otp } = req.body;
+    const email = normalizeEmail(rawEmail);
     const submittedOtp = otp || code;
 
     if (!email || !submittedOtp) {
@@ -205,7 +257,15 @@ export const verifyEmail = async (req, res) => {
     }
 
     const [users] = await db.query(
-      'SELECT id, otp, otp_expiry, verification_code, is_verified FROM users WHERE email = ?',
+      `SELECT
+        id,
+        otp,
+        otp_expiry,
+        verification_code,
+        is_verified,
+        CASE WHEN otp_expiry >= NOW() THEN 1 ELSE 0 END AS otp_is_valid
+       FROM users
+       WHERE LOWER(email) = ?`,
       [email]
     );
 
@@ -218,14 +278,13 @@ export const verifyEmail = async (req, res) => {
 
     if (
       String(storedOtp) !== String(submittedOtp) ||
-      !user.otp_expiry ||
-      new Date(user.otp_expiry).getTime() < Date.now()
+      !user.otp_is_valid
     ) {
       return res.status(400).json({ message: 'Invalid or expired verification code' });
     }
 
     await db.query(
-      'UPDATE users SET is_verified = TRUE, otp = NULL, otp_expiry = NULL, verification_code = NULL WHERE email = ?',
+      'UPDATE users SET is_verified = TRUE, otp = NULL, otp_expiry = NULL, verification_code = NULL WHERE LOWER(email) = ?',
       [email]
     );
 
@@ -242,13 +301,14 @@ export const loginUser = async (req, res) => {
   try {
     await ensureAuthColumns();
 
-    const { email, password } = req.body;
+    const { email: rawEmail, password } = req.body;
+    const email = normalizeEmail(rawEmail);
 
     if (!email || !password) {
       return res.status(400).json({ message: 'Please provide email and password' });
     }
 
-    const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+    const [users] = await db.query('SELECT * FROM users WHERE LOWER(email) = ?', [email]);
     if (users.length === 0) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -262,13 +322,20 @@ export const loginUser = async (req, res) => {
 
     if (!user.is_verified) {
       const otp = generateCode();
-      const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
 
       await db.query(
-        'UPDATE users SET otp = ?, otp_expiry = ?, verification_code = ? WHERE id = ?',
-        [otp, otpExpiry, otp, user.id]
+        'UPDATE users SET otp = ?, otp_expiry = DATE_ADD(NOW(), INTERVAL 10 MINUTE), verification_code = ? WHERE id = ?',
+        [otp, otp, user.id]
       );
-      await sendVerificationEmail(user.email, otp);
+      try {
+        const emailResult = await sendVerificationEmail(user.email, otp);
+        if (emailResult?.skipped) {
+          throw new Error('Email sending is not configured. Please set EMAIL_USER and EMAIL_PASS.');
+        }
+      } catch (emailError) {
+        console.error('Login verification OTP email failed:', emailError);
+        return res.status(500).json({ message: 'Unable to send verification OTP. Please check email configuration.' });
+      }
 
       return res.status(403).json({
         message: 'Please verify your email before signing in. A new OTP has been sent.',
@@ -316,21 +383,21 @@ export const forgotPassword = async (req, res) => {
   try {
     await ensureAuthColumns();
 
-    const { email } = req.body;
+    const { email: rawEmail } = req.body;
+    const email = normalizeEmail(rawEmail);
 
     if (!email) {
       return res.status(400).json({ message: 'Email is required' });
     }
 
-    const [users] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
+    const [users] = await db.query('SELECT id FROM users WHERE LOWER(email) = ?', [email]);
 
     if (users.length > 0) {
       const otp = generateCode();
-      const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
       await db.query(
-        'UPDATE users SET otp = ?, otp_expiry = ?, reset_token = ?, reset_token_expiry = ? WHERE email = ?',
-        [otp, expiry, otp, expiry, email]
+        'UPDATE users SET otp = ?, otp_expiry = DATE_ADD(NOW(), INTERVAL 10 MINUTE), reset_token = ?, reset_token_expiry = DATE_ADD(NOW(), INTERVAL 10 MINUTE) WHERE LOWER(email) = ?',
+        [otp, otp, email]
       );
 
       await sendResetEmail(email, otp);
@@ -347,7 +414,8 @@ export const resetPassword = async (req, res) => {
   try {
     await ensureAuthColumns();
 
-    const { email, otp, reset_token, resetToken, new_password, newPassword } = req.body;
+    const { email: rawEmail, otp, reset_token, resetToken, new_password, newPassword } = req.body;
+    const email = normalizeEmail(rawEmail);
     const token = otp || reset_token || resetToken;
     const password = new_password || newPassword;
 
@@ -362,19 +430,25 @@ export const resetPassword = async (req, res) => {
     }
 
     const [users] = await db.query(
-      'SELECT id, otp, otp_expiry, reset_token, reset_token_expiry FROM users WHERE email = ?',
+      `SELECT
+        id,
+        otp,
+        otp_expiry,
+        reset_token,
+        reset_token_expiry,
+        CASE WHEN COALESCE(otp_expiry, reset_token_expiry) >= NOW() THEN 1 ELSE 0 END AS reset_is_valid
+       FROM users
+       WHERE LOWER(email) = ?`,
       [email]
     );
 
     const user = users[0];
     const storedOtp = user?.otp || user?.reset_token;
-    const expiry = user?.otp_expiry || user?.reset_token_expiry;
 
     if (
       users.length === 0 ||
       String(storedOtp) !== String(token) ||
-      !expiry ||
-      new Date(expiry).getTime() < Date.now()
+      !user?.reset_is_valid
     ) {
       return res.status(400).json({ message: 'Invalid or expired reset code' });
     }
@@ -382,7 +456,7 @@ export const resetPassword = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await db.query(
-      'UPDATE users SET password = ?, otp = NULL, otp_expiry = NULL, reset_token = NULL, reset_token_expiry = NULL WHERE email = ?',
+      'UPDATE users SET password = ?, otp = NULL, otp_expiry = NULL, reset_token = NULL, reset_token_expiry = NULL WHERE LOWER(email) = ?',
       [hashedPassword, email]
     );
 

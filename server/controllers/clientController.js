@@ -138,8 +138,8 @@ export const getAllClients = async (req, res) => {
 
     if (requester.role !== 'admin') {
       if (requesterDepartment === 'Customer Service') {
-        whereClauses.push('a.created_by_cs_id = ?');
-        queryParams.push(req.user.id);
+        whereClauses.push('(a.created_by_cs_id = ? OR a.counselor_id IS NULL OR a.status = ?)');
+        queryParams.push(req.user.id, 'PENDING_CS_REVIEW');
       } else if (requesterDepartment === 'Counselor') {
         whereClauses.push('a.counselor_id = ?');
         queryParams.push(req.user.id);
@@ -241,6 +241,7 @@ export const getMyClientProfile = async (req, res) => {
         a.current_stage,
         a.status AS app_status,
         a.missing_docs_note,
+        a.visa_progress,
         a.offer_letter_url,
         a.updated_at AS app_updated_at,
         a.assigned_staff_id,
@@ -248,9 +249,9 @@ export const getMyClientProfile = async (req, res) => {
        FROM users u
        LEFT JOIN students s ON u.id = s.user_id
        LEFT JOIN (
-         SELECT *, ROW_NUMBER() OVER(PARTITION BY student_id ORDER BY updated_at DESC) as rn
+         SELECT *, ROW_NUMBER() OVER(PARTITION BY COALESCE(student_id, client_id) ORDER BY updated_at DESC) as rn
          FROM applications
-       ) a ON u.id = a.student_id AND a.rn = 1
+       ) a ON (u.id = a.student_id OR u.id = a.client_id) AND a.rn = 1
        LEFT JOIN users c ON a.assigned_staff_id = c.id
        LEFT JOIN accommodations acc ON a.accommodation_id = acc.id
        LEFT JOIN flights f ON a.flight_id = f.id
