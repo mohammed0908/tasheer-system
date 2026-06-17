@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+const backendUrl =
+  process.env.VITE_API_URL || 'https://tasheer-system-production.up.railway.app'
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -8,12 +11,14 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: backendUrl,
         changeOrigin: true,
+        secure: true,
       },
       '/uploads': {
-        target: 'http://localhost:5000',
+        target: backendUrl,
         changeOrigin: true,
+        secure: true,
       },
     },
   },
@@ -22,5 +27,17 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 4173,
     allowedHosts: ['tasheer.up.railway.app'],
+    proxy: {
+      '/api': {
+        target: backendUrl,
+        changeOrigin: true,
+        secure: true,
+      },
+      '/uploads': {
+        target: backendUrl,
+        changeOrigin: true,
+        secure: true,
+      },
+    },
   },
 })
